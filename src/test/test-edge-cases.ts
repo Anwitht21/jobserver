@@ -4,6 +4,7 @@ import { runMigrations } from '../db/migrations';
 import { createJobDefinition, createJob, getJobById, claimJob, listJobs, updateJobStatus, reclaimOrphanedJobs, moveJobToDlq } from '../db/jobs';
 import { Job } from '../types';
 import { v4 as uuidv4 } from 'uuid';
+import { metricsCache } from '../utils/metrics-cache';
 
 const API_URL = process.env.API_URL || 'http://localhost:3000';
 
@@ -51,6 +52,8 @@ async function clearDatabase(): Promise<void> {
   await pool.query('DELETE FROM jobs_dlq');
   await pool.query('DELETE FROM jobs');
   // Note: We don't delete job_definitions as they might be reused
+  // Clear metrics cache to avoid stale data
+  metricsCache.clear();
 }
 
 // ============================================================================
@@ -205,25 +208,60 @@ async function test4_OrphanedJobRecovery(): Promise<boolean> {
     const definitionKey = `test.orphan.${uuidv4()}`;
     await createJobDefinition(definitionKey, 1, 3, 3600, 0);
     
-    // Create a job
-    const job = await createJob({
-      definitionKey,
-      definitionVersion: 1,
-      params: { test: 'orphan' },
-    });
-    
-    // Manually set it to running with expired lease
+    // Create a job directly as 'running' with expired lease to prevent workers from claiming it
+    // We bypass createJob() to avoid the race condition where a worker might claim it
     const pool = getPool();
-    await pool.query(
-      `UPDATE jobs 
-       SET status = 'running', 
-           worker_id = 'dead-worker',
-           started_at = NOW() - INTERVAL '2 minutes',
-           heartbeat_at = NOW() - INTERVAL '2 minutes',
-           lease_expires_at = NOW() - INTERVAL '1 minute'
-       WHERE id = $1`,
-      [job.id]
+    
+    // Get max_attempts from definition
+    const defResult = await pool.query(
+      'SELECT default_max_attempts FROM job_definitions WHERE key = $1 AND version = $2',
+      [definitionKey, 1]
     );
+    const maxAttempts = defResult.rows[0]?.default_max_attempts ?? 3;
+    
+    // Insert job directly as 'running' with expired lease
+    const jobId = uuidv4();
+    const result = await pool.query(
+      `INSERT INTO jobs (
+        id, definition_key, definition_version, params, status, priority,
+        max_attempts, queued_at, worker_id, started_at, heartbeat_at, 
+        lease_expires_at, finished_at, error_summary
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() - INTERVAL '2 minutes', $8, 
+                 NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '2 minutes',
+                 NOW() - INTERVAL '1 minute', NULL, NULL)
+      RETURNING *`,
+      [
+        jobId,
+        definitionKey,
+        1,
+        JSON.stringify({ test: 'orphan' }),
+        'running',
+        0,
+        maxAttempts,
+        'dead-worker',
+      ]
+    );
+    
+    const job = {
+      id: result.rows[0].id,
+      definitionKey: result.rows[0].definition_key,
+      definitionVersion: result.rows[0].definition_version,
+      params: result.rows[0].params || {},
+      status: result.rows[0].status,
+      priority: result.rows[0].priority,
+      attempts: result.rows[0].attempts,
+      maxAttempts: result.rows[0].max_attempts,
+      scheduledAt: result.rows[0].scheduled_at,
+      queuedAt: result.rows[0].queued_at,
+      startedAt: result.rows[0].started_at,
+      finishedAt: result.rows[0].finished_at,
+      heartbeatAt: result.rows[0].heartbeat_at,
+      leaseExpiresAt: result.rows[0].lease_expires_at,
+      cancelRequestedAt: result.rows[0].cancel_requested_at,
+      workerId: result.rows[0].worker_id,
+      idempotencyKey: result.rows[0].idempotency_key,
+      errorSummary: result.rows[0].error_summary,
+    };
     
     // Verify the job is set up correctly before reclaiming
     const verifyJob = await getJobById(job.id);
@@ -232,7 +270,7 @@ async function test4_OrphanedJobRecovery(): Promise<boolean> {
       return false;
     }
     
-    // Small delay to ensure the update is committed
+    // Small delay to ensure the insert is committed
     await sleep(50);
     
     // Reclaim orphaned jobs
@@ -838,9 +876,14 @@ async function test14_MetricsEdgeCases(): Promise<boolean> {
   try {
     await clearDatabase();
     
+    // Small delay to ensure database operations are committed
+    await sleep(100);
+    
     // Test 14a: Metrics on empty database
+    // Clear cache again to ensure no stale data, then use ttl=0 to bypass cache
+    metricsCache.clear();
     try {
-      const metrics = await apiCall('GET', '/v1/metrics') as any;
+      const metrics = await apiCall('GET', '/v1/metrics?ttl=0') as any;
       if (metrics.summary.total !== 0) {
         log(`✗ Expected 0 total jobs, got ${metrics.summary.total}`, colors.red);
         return false;
@@ -852,8 +895,21 @@ async function test14_MetricsEdgeCases(): Promise<boolean> {
     }
     
     // Test 14b: Throughput with no completed jobs
+    // Clear cache again and verify database is empty
+    metricsCache.clear();
+    const pool = getPool();
+    const remainingJobs = await pool.query(
+      `SELECT COUNT(*) as count FROM jobs WHERE finished_at IS NOT NULL AND status IN ('succeeded', 'failed', 'cancelled')`
+    );
+    if (parseInt(remainingJobs.rows[0].count, 10) > 0) {
+      log(`⚠ Warning: Found ${remainingJobs.rows[0].count} jobs with finished_at in database before throughput test`, colors.yellow);
+      // Clean up any remaining jobs
+      await pool.query(`DELETE FROM jobs WHERE finished_at IS NOT NULL`);
+      await sleep(100);
+    }
+    
     try {
-      const throughput = await apiCall('GET', '/v1/metrics/throughput') as any;
+      const throughput = await apiCall('GET', '/v1/metrics/throughput?ttl=0') as any;
       if (throughput.data.length !== 0) {
         log(`✗ Expected empty throughput data, got ${throughput.data.length}`, colors.red);
         return false;
