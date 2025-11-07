@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { getPool } from '../db/connection';
 import { createJob } from '../db/jobs';
 import { validate } from 'node-cron';
+import { parseExpression } from 'cron-parser';
 import { runMigrations } from '../db/migrations';
 
 interface Schedule {
@@ -101,7 +102,8 @@ class Scheduler {
         definitionKey: row.definition_key,
         definitionVersion: row.definition_version,
         cron: row.cron,
-        params: row.params ? JSON.parse(row.params) : {},
+        // PostgreSQL JSONB columns are already parsed as objects by pg library
+        params: row.params || {},
         priority: row.priority,
         enabled: row.enabled,
         lastEnqueuedAt: row.last_enqueued_at,
@@ -140,29 +142,24 @@ class Scheduler {
   }
 
   private shouldRun(cronExpr: string, lastRun: Date | null, now: Date): boolean {
-    // Simple cron parsing - supports standard 5-field cron
     try {
       if (!validate(cronExpr)) {
         return false;
       }
 
-      // If never run, check if it should run now
+      // If never run, check if cron matches current time
       if (!lastRun) {
-        // For simplicity, we'll enqueue if the cron matches the current minute
-        // In production, you'd want more sophisticated matching
-        return true;
+        return this.cronMatchesTime(cronExpr, now);
       }
 
       // Check if enough time has passed since last run
       // We check every minute, so if last run was more than 1 minute ago,
-      // and the cron would match, we should run
+      // check if the cron would match now
       const minutesSinceLastRun = Math.floor((now.getTime() - lastRun.getTime()) / 60000);
       
-      // If it's been at least 1 minute, check if cron matches
+      // If it's been at least 1 minute, check if cron matches current time
       if (minutesSinceLastRun >= 1) {
-        // Use node-cron's schedule to check if it would trigger
-        // This is a simplified check - in production you'd want more precise matching
-        return true;
+        return this.cronMatchesTime(cronExpr, now);
       }
     } catch (error) {
       console.error(`[Scheduler] Invalid cron expression: ${cronExpr}`, error);
@@ -170,6 +167,34 @@ class Scheduler {
     }
 
     return false;
+  }
+
+  private cronMatchesTime(cronExpr: string, time: Date): boolean {
+    try {
+      // Use cron-parser to get the next execution time
+      const interval = parseExpression(cronExpr, {
+        currentDate: time,
+        tz: 'UTC'
+      });
+      
+      // Get the previous execution time (if any)
+      const prevDate = interval.prev();
+      
+      // Get the current minute (rounded down)
+      const currentMinute = new Date(time.getFullYear(), time.getMonth(), time.getDate(), 
+                                     time.getHours(), time.getMinutes(), 0, 0);
+      
+      // Get the previous execution minute
+      const prevMinute = new Date(prevDate.getFullYear(), prevDate.getMonth(), prevDate.getDate(),
+                                  prevDate.getHours(), prevDate.getMinutes(), 0, 0);
+      
+      // If the previous execution was in the current minute, it should run
+      // We check if prevMinute equals currentMinute (within the same minute)
+      return prevMinute.getTime() === currentMinute.getTime();
+    } catch (error) {
+      console.error(`[Scheduler] Error checking cron match: ${cronExpr}`, error);
+      return false;
+    }
   }
 }
 

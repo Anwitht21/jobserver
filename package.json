@@ -14,6 +14,7 @@
     "test:e2e": "tsx src/test/e2e.ts",
     "test:jobs": "tsx src/test/test-job-definitions.ts",
     "test:metrics": "tsx src/test/test-metrics.ts",
+    "test:scheduler": "tsx src/test/test-scheduler.ts",
     "migrate:create": "tsx src/db/create-migration.ts",
     "test": "jest"
   },
@@ -21,21 +22,21 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "pg": "^8.11.3",
+    "cron-parser": "^5.4.0",
+    "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "zod": "^3.22.4",
-    "uuid": "^9.0.1",
     "node-cron": "^3.0.3",
-    "dotenv": "^16.3.1"
+    "pg": "^8.11.3",
+    "uuid": "^9.0.1",
+    "zod": "^3.22.4"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^20.10.6",
+    "@types/node-cron": "^3.0.11",
     "@types/pg": "^8.10.9",
     "@types/uuid": "^9.0.7",
-    "@types/node-cron": "^3.0.11",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
   }
 }
-
