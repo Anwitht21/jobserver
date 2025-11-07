@@ -110,43 +110,56 @@ export async function getJobById(jobId: string): Promise<Job | null> {
 
 export async function claimJob(workerId: string, leaseDurationSeconds: number): Promise<Job | null> {
   const pool = getPool();
-  
-  // Check for scheduled jobs first, then regular queued jobs
-  // Exclude jobs that have been cancelled
-  const result = await pool.query(
-    `SELECT id FROM jobs
-     WHERE status = 'queued'
-       AND (scheduled_at IS NULL OR scheduled_at <= NOW())
-       AND cancel_requested_at IS NULL
-     ORDER BY priority DESC, queued_at ASC
-     FOR UPDATE SKIP LOCKED
-     LIMIT 1`
-  );
-  
-  if (result.rows.length === 0) {
-    return null;
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Check for scheduled jobs first, then regular queued jobs
+    // Exclude jobs that have been cancelled
+    const result = await client.query(
+      `SELECT id FROM jobs
+       WHERE status = 'queued'
+         AND (scheduled_at IS NULL OR scheduled_at <= NOW())
+         AND cancel_requested_at IS NULL
+       ORDER BY priority DESC, queued_at ASC
+       FOR UPDATE SKIP LOCKED
+       LIMIT 1`
+    );
+
+    if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+
+    const jobId = result.rows[0].id;
+
+    // Update job to running status
+    const updateResult = await client.query(
+      `UPDATE jobs
+       SET status = 'running',
+           worker_id = $1,
+           started_at = NOW(),
+           heartbeat_at = NOW(),
+           lease_expires_at = NOW() + INTERVAL '1 second' * $2
+       WHERE id = $3
+       RETURNING *`,
+      [workerId, leaseDurationSeconds, jobId]
+    );
+
+    if (updateResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+
+    await client.query('COMMIT');
+    return mapRowToJob(updateResult.rows[0]);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
-  
-  const jobId = result.rows[0].id;
-  
-  // Update job to running status
-  const updateResult = await pool.query(
-    `UPDATE jobs
-     SET status = 'running',
-         worker_id = $1,
-         started_at = NOW(),
-         heartbeat_at = NOW(),
-         lease_expires_at = NOW() + INTERVAL '1 second' * $2
-     WHERE id = $3
-     RETURNING *`,
-    [workerId, leaseDurationSeconds, jobId]
-  );
-  
-  if (updateResult.rows.length === 0) {
-    return null;
-  }
-  
-  return mapRowToJob(updateResult.rows[0]);
 }
 
 export async function updateJobStatus(

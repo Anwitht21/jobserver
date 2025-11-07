@@ -14,6 +14,7 @@
     "test:e2e": "tsx src/test/e2e.ts",
     "test:jobs": "tsx src/test/test-job-definitions.ts",
     "test:metrics": "tsx src/test/test-metrics.ts",
+    "test:claim": "tsx src/test/test-claim.ts",
     "test:scheduler": "tsx src/test/test-scheduler.ts",
     "test:notifications": "tsx src/test/test-notifications.ts",
     "test:dlq": "tsx src/test/test-dlq.ts",
