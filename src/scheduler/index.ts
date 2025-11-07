@@ -89,54 +89,53 @@ class Scheduler {
       }
     }
 
-    // Verify we still have the lock
-    const pool = getPool();
-    const lockCheck = await pool.query('SELECT pg_advisory_lock_held($1)', [SCHEDULER_LOCK_KEY]);
-    if (!lockCheck.rows[0].pg_advisory_lock_held) {
-      this.hasLock = false;
-      return;
-    }
+    try {
+      // Get all enabled schedules
+      const pool = getPool();
+      const schedulesResult = await pool.query(
+        'SELECT * FROM schedules WHERE enabled = TRUE'
+      );
 
-    // Get all enabled schedules
-    const schedulesResult = await pool.query(
-      'SELECT * FROM schedules WHERE enabled = TRUE'
-    );
+      const schedules: Schedule[] = schedulesResult.rows.map((row) => ({
+        id: row.id,
+        definitionKey: row.definition_key,
+        definitionVersion: row.definition_version,
+        cron: row.cron,
+        params: row.params ? JSON.parse(row.params) : {},
+        priority: row.priority,
+        enabled: row.enabled,
+        lastEnqueuedAt: row.last_enqueued_at,
+      }));
 
-    const schedules: Schedule[] = schedulesResult.rows.map((row) => ({
-      id: row.id,
-      definitionKey: row.definition_key,
-      definitionVersion: row.definition_version,
-      cron: row.cron,
-      params: row.params ? JSON.parse(row.params) : {},
-      priority: row.priority,
-      enabled: row.enabled,
-      lastEnqueuedAt: row.last_enqueued_at,
-    }));
+      const now = new Date();
 
-    const now = new Date();
+      for (const schedule of schedules) {
+        try {
+          // Parse cron expression and check if it should run now
+          if (this.shouldRun(schedule.cron, schedule.lastEnqueuedAt, now)) {
+            await createJob({
+              definitionKey: schedule.definitionKey,
+              definitionVersion: schedule.definitionVersion,
+              params: schedule.params,
+              priority: schedule.priority,
+            });
 
-    for (const schedule of schedules) {
-      try {
-        // Parse cron expression and check if it should run now
-        if (this.shouldRun(schedule.cron, schedule.lastEnqueuedAt, now)) {
-          await createJob({
-            definitionKey: schedule.definitionKey,
-            definitionVersion: schedule.definitionVersion,
-            params: schedule.params,
-            priority: schedule.priority,
-          });
+            // Update last_enqueued_at
+            await pool.query(
+              'UPDATE schedules SET last_enqueued_at = NOW() WHERE id = $1',
+              [schedule.id]
+            );
 
-          // Update last_enqueued_at
-          await pool.query(
-            'UPDATE schedules SET last_enqueued_at = NOW() WHERE id = $1',
-            [schedule.id]
-          );
-
-          console.log(`[Scheduler] Enqueued job for schedule ${schedule.id} (${schedule.definitionKey})`);
+            console.log(`[Scheduler] Enqueued job for schedule ${schedule.id} (${schedule.definitionKey})`);
+          }
+        } catch (error) {
+          console.error(`[Scheduler] Error processing schedule ${schedule.id}:`, error);
         }
-      } catch (error) {
-        console.error(`[Scheduler] Error processing schedule ${schedule.id}:`, error);
       }
+    } catch (error) {
+      // If we get a connection error, reset lock state and try to reacquire next tick
+      console.error('[Scheduler] Database error in tick, will retry:', error);
+      this.hasLock = false;
     }
   }
 
