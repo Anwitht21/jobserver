@@ -2,12 +2,59 @@ import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { z } from 'zod';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
 import { createJob, getJobById, listJobs, requestCancellation, getJobEvents, listDlqJobs, getDlqJobById, retryDlqJob, listJobDefinitions } from '../db/jobs';
 import { CreateJobRequest } from '../types';
 import { runMigrations } from '../db/migrations';
 import { metricsCache } from '../utils/metrics-cache';
 
 const app = express();
+
+// Ensure upload and output directories exist
+const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
+const OUTPUT_DIR = path.join(process.cwd(), 'outputs');
+
+[UPLOAD_DIR, OUTPUT_DIR].forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+});
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, UPLOAD_DIR);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, `${uniqueSuffix}-${file.originalname}`);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 500 * 1024 * 1024, // 500MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept video files - check both mimetype and extension
+    const allowedMimes = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska', 'video/webm'];
+    const allowedExtensions = ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.flv', '.wmv'];
+    
+    const hasValidMime = allowedMimes.includes(file.mimetype);
+    const hasValidExtension = allowedExtensions.some(ext => 
+      file.originalname.toLowerCase().endsWith(ext)
+    );
+    
+    if (hasValidMime || hasValidExtension) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Invalid file type. Only video files are allowed. Got mimetype: ${file.mimetype}, filename: ${file.originalname}`));
+    }
+  },
+});
 
 // Enable CORS for frontend access
 app.use(cors({
@@ -398,6 +445,127 @@ app.post('/v1/dlq/:dlqJobId/retry', async (req: Request, res: Response) => {
       return;
     }
     console.error('Error retrying DLQ job:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /v1/videos/encode - Upload video and create encoding job
+app.post('/v1/videos/encode', upload.single('video'), async (req: Request, res: Response) => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ error: 'No video file uploaded' });
+      return;
+    }
+
+    const { format, quality, priority } = req.body;
+    
+    // Create encoding job with file path
+    const job = await createJob({
+      definitionKey: 'encode.video',
+      definitionVersion: 1,
+      params: {
+        inputPath: req.file.path,
+        originalFilename: req.file.originalname,
+        format: format || 'mp4',
+        quality: quality || '1080p',
+      },
+      priority: priority ? parseInt(priority, 10) : undefined,
+    });
+    
+    res.status(201).json({
+      jobId: job.id,
+      status: job.status,
+      message: 'Video encoding job created',
+      inputFile: req.file.filename,
+    });
+  } catch (error) {
+    console.error('Error creating video encoding job:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      message: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+// GET /v1/videos/:jobId/download - Download encoded video
+app.get('/v1/videos/:jobId/download', async (req: Request, res: Response) => {
+  try {
+    const { jobId } = req.params;
+    
+    // Get job to find output file path
+    const job = await getJobById(jobId);
+    if (!job) {
+      res.status(404).json({ error: 'Job not found' });
+      return;
+    }
+
+    // Get job events to find output file path
+    const events = await getJobEvents(jobId);
+    const completionEvent = events.find(e => e.eventType === 'completed' || e.eventType === 'success');
+    
+    if (!completionEvent || !completionEvent.payload) {
+      res.status(404).json({ error: 'Encoded video not found. Job may not be completed yet.' });
+      return;
+    }
+
+    const payload = completionEvent.payload as { outputPath?: string };
+    if (!payload.outputPath) {
+      res.status(404).json({ error: 'Output file path not found' });
+      return;
+    }
+
+    const outputPath = path.join(process.cwd(), payload.outputPath);
+    
+    if (!fs.existsSync(outputPath)) {
+      res.status(404).json({ error: 'Output file not found on disk' });
+      return;
+    }
+
+    // Send file
+    res.download(outputPath, (err) => {
+      if (err) {
+        console.error('Error sending file:', err);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Error downloading file' });
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error downloading video:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /v1/videos/:jobId/status - Get encoding status with output info
+app.get('/v1/videos/:jobId/status', async (req: Request, res: Response) => {
+  try {
+    const { jobId } = req.params;
+    
+    const job = await getJobById(jobId);
+    if (!job) {
+      res.status(404).json({ error: 'Job not found' });
+      return;
+    }
+
+    const events = await getJobEvents(jobId);
+    const completionEvent = events.find(e => e.eventType === 'completed' || e.eventType === 'success');
+    
+    const response: any = {
+      jobId: job.id,
+      status: job.status,
+      definitionKey: job.definitionKey,
+    };
+
+    if (completionEvent?.payload) {
+      const payload = completionEvent.payload as { outputPath?: string; outputFilename?: string };
+      response.outputPath = payload.outputPath;
+      response.outputFilename = payload.outputFilename;
+      response.downloadUrl = `/v1/videos/${jobId}/download`;
+    }
+
+    res.json(response);
+  } catch (error) {
+    console.error('Error getting video status:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

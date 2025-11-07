@@ -181,7 +181,7 @@ async function registerExampleJobs() {
     },
   });
 
-  // Video encoding simulation - CPU-intensive task
+  // Video encoding - Real ffmpeg encoding
   jobRegistry.register({
     key: 'encode.video',
     version: 1,
@@ -189,26 +189,120 @@ async function registerExampleJobs() {
     timeoutSeconds: 7200, // 2 hours
     concurrencyLimit: 3, // Max 3 concurrent video encodings
     run: async (params, ctx) => {
-      const { videoId, format, quality } = params as { videoId: string; format?: string; quality?: string };
-      ctx.logger.info('Video encoding started', { videoId, format: format || 'mp4', quality: quality || '1080p' });
+      const ffmpeg = require('fluent-ffmpeg');
+      const path = require('path');
+      const fs = require('fs');
       
-      // Simulate encoding progress
-      const steps = ['Analyzing video', 'Extracting frames', 'Encoding', 'Applying filters', 'Finalizing'];
-      for (let i = 0; i < steps.length; i++) {
-        if (ctx.abortSignal.aborted) {
-          throw new Error('Video encoding cancelled');
-        }
-        ctx.logger.info(`Encoding progress: ${steps[i]} (${i + 1}/${steps.length})`);
-        await ctx.emitEvent('progress', { step: steps[i], progress: ((i + 1) / steps.length) * 100 });
-        // Simulate encoding time (longer for higher quality)
-        const delay = quality === '4k' ? 3000 : quality === '1080p' ? 2000 : 1000;
-        await new Promise(resolve => setTimeout(resolve, delay));
+      const { inputPath, originalFilename, format, quality } = params as { 
+        inputPath: string; 
+        originalFilename?: string; 
+        format?: string; 
+        quality?: string 
+      };
+      
+      if (!inputPath || !fs.existsSync(inputPath)) {
+        throw new Error(`Input video file not found: ${inputPath}`);
+      }
+
+      const outputFormat = format || 'mp4';
+      const outputQuality = quality || '1080p';
+      
+      ctx.logger.info('Video encoding started', { 
+        inputPath, 
+        originalFilename, 
+        format: outputFormat, 
+        quality: outputQuality 
+      });
+      
+      // Determine output directory and filename
+      const outputDir = path.join(process.cwd(), 'outputs');
+      if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
       }
       
-      ctx.logger.info('Video encoding completed', { videoId, outputFormat: format || 'mp4' });
+      const inputBasename = path.basename(inputPath, path.extname(inputPath));
+      const outputFilename = `${inputBasename}-${outputQuality}.${outputFormat}`;
+      const outputPath = path.join(outputDir, outputFilename);
+      
+      // Map quality to video bitrate/resolution
+      const qualitySettings: Record<string, { videoBitrate: string; scale?: string }> = {
+        '720p': { videoBitrate: '2500k', scale: '1280:720' },
+        '1080p': { videoBitrate: '5000k', scale: '1920:1080' },
+        '4k': { videoBitrate: '15000k', scale: '3840:2160' },
+      };
+      
+      const settings = qualitySettings[outputQuality] || qualitySettings['1080p'];
+      
+      await ctx.emitEvent('progress', { step: 'Starting encoding', progress: 0 });
+      
+      return new Promise<void>((resolve, reject) => {
+        const command = ffmpeg(inputPath)
+          .outputOptions([
+            `-c:v libx264`,
+            `-preset medium`,
+            `-crf 23`,
+            `-b:v ${settings.videoBitrate}`,
+            settings.scale ? `-vf scale=${settings.scale}` : '',
+            `-c:a aac`,
+            `-b:a 192k`,
+            `-movflags +faststart`, // Web optimization
+          ].filter(Boolean))
+          .format(outputFormat)
+          .output(outputPath)
+          .on('start', (commandLine: string) => {
+            ctx.logger.info('FFmpeg command:', commandLine);
+            ctx.emitEvent('progress', { step: 'Encoding started', progress: 10 });
+          })
+          .on('progress', (progress: { percent?: number; timemark?: string }) => {
+            const percent = Math.min(progress.percent || 0, 95);
+            ctx.logger.info(`Encoding progress: ${percent.toFixed(1)}%`, progress);
+            ctx.emitEvent('progress', { 
+              step: 'Encoding', 
+              progress: percent,
+              timemark: progress.timemark 
+            });
+          })
+          .on('end', async () => {
+            ctx.logger.info('Video encoding completed', { 
+              outputPath: `outputs/${outputFilename}`,
+              outputFilename 
+            });
+            
+            // Emit completion event with output file info
+            await ctx.emitEvent('completed', {
+              outputPath: `outputs/${outputFilename}`,
+              outputFilename,
+              format: outputFormat,
+              quality: outputQuality,
+            });
+            
+            await ctx.emitEvent('progress', { step: 'Completed', progress: 100 });
+            
+            // Clean up input file (optional - comment out if you want to keep originals)
+            // fs.unlinkSync(inputPath);
+            
+            resolve();
+          })
+          .on('error', (err: Error) => {
+            ctx.logger.error('FFmpeg encoding error:', err);
+            reject(new Error(`Video encoding failed: ${err.message}`));
+          });
+        
+        // Handle cancellation
+        ctx.abortSignal.addEventListener('abort', () => {
+          ctx.logger.info('Video encoding cancelled by user');
+          command.kill('SIGKILL');
+          reject(new Error('Video encoding cancelled'));
+        });
+        
+        command.run();
+      });
     },
     onSuccess: async (ctx) => {
       ctx.logger.info('Video encoding succeeded - ready for delivery');
+    },
+    onFail: async (ctx) => {
+      ctx.logger.error('Video encoding failed', { error: ctx.error });
     },
   });
 
