@@ -57,34 +57,65 @@ export async function executeJob(
 
     // Check for cancellation requests
     cancelCheckInterval = setInterval(async () => {
-      const currentJob = await getJobById(job.id);
-      if (currentJob?.cancelRequestedAt) {
-        abortController.abort();
-        await updateJobStatus(job.id, 'cancelling');
+      try {
+        const currentJob = await getJobById(job.id);
+        if (currentJob?.cancelRequestedAt) {
+          abortController.abort();
+          await updateJobStatus(job.id, 'cancelling');
+        }
+      } catch (error) {
+        console.error(`[${job.id}] Failed to check cancellation:`, error);
       }
     }, 1000);
 
     // Execute the job
     await definition.run(job.params, context);
 
-    // Success path
-    clearInterval(heartbeatInterval);
-    clearInterval(cancelCheckInterval);
+    // Success path - clear intervals first
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+    }
+    if (cancelCheckInterval) {
+      clearInterval(cancelCheckInterval);
+      cancelCheckInterval = null;
+    }
+    
+    // Update status and emit events
     await updateJobStatus(job.id, 'succeeded');
     await createJobEvent(job.id, 'succeeded');
     
-    if (definition.onSuccess) {
-      await definition.onSuccess(context);
+    // Call lifecycle hooks
+    try {
+      if (definition.onSuccess) {
+        await definition.onSuccess(context);
+      }
+    } catch (error) {
+      console.error(`[${job.id}] Error in onSuccess hook:`, error);
     }
-    if (definition.onEnd) {
-      await definition.onEnd(context);
+    
+    try {
+      if (definition.onEnd) {
+        await definition.onEnd(context);
+      }
+    } catch (error) {
+      console.error(`[${job.id}] Error in onEnd hook:`, error);
     }
   } catch (error) {
-    clearInterval(heartbeatInterval);
-    clearInterval(cancelCheckInterval);
+    // Clear intervals on error
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+    }
+    if (cancelCheckInterval) {
+      clearInterval(cancelCheckInterval);
+      cancelCheckInterval = null;
+    }
     
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorSummary = errorMessage.length > 500 ? errorMessage.substring(0, 500) : errorMessage;
+    
+    console.error(`[${job.id}] Job execution failed:`, error);
     
     await incrementAttempts(job.id);
     const updatedJob = await getJobById(job.id);
@@ -108,13 +139,25 @@ export async function executeJob(
       await updateJobStatus(job.id, 'failed', errorSummary);
       await createJobEvent(job.id, 'failed', { error: errorSummary, attempts: updatedJob.attempts });
       
-      if (definition.onFail) {
-        await definition.onFail({ ...context, error });
+      try {
+        if (definition.onFail) {
+          await definition.onFail({ ...context, error });
+        }
+      } catch (hookError) {
+        console.error(`[${job.id}] Error in onFail hook:`, hookError);
       }
-      if (definition.onEnd) {
-        await definition.onEnd(context);
+      
+      try {
+        if (definition.onEnd) {
+          await definition.onEnd(context);
+        }
+      } catch (hookError) {
+        console.error(`[${job.id}] Error in onEnd hook:`, hookError);
       }
     }
+    
+    // Re-throw to ensure the promise rejects
+    throw error;
   }
 }
 

@@ -11,6 +11,7 @@
     "dev:scheduler": "tsx watch src/scheduler/index.ts",
     "migrate": "tsx src/db/migrate.ts",
     "register-definitions": "tsx src/db/register-definitions.ts",
+    "test:e2e": "tsx src/test/e2e.ts",
     "migrate:create": "tsx src/db/create-migration.ts",
     "test": "jest"
   },
