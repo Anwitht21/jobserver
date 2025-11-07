@@ -1,5 +1,5 @@
 import { getPool } from './connection';
-import { Job, JobStatus, CreateJobRequest, JobEvent } from '../types';
+import { Job, JobStatus, CreateJobRequest, JobEvent, JobMetricsSummary, JobPerformanceStats, JobThroughput, DefinitionMetrics, ThroughputDataPoint, JobStatusCounts } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
 export async function createJobDefinition(
@@ -318,6 +318,191 @@ export async function getJobEvents(jobId: string): Promise<JobEvent[]> {
     at: row.at,
     // PostgreSQL JSONB columns are already parsed as objects by pg library
     payload: row.payload || null,
+  }));
+}
+
+export async function getJobMetricsSummary(): Promise<JobMetricsSummary> {
+  const pool = getPool();
+  const result = await pool.query(`
+    SELECT 
+      COUNT(*) as total,
+      COUNT(*) FILTER (WHERE status = 'queued') as queued,
+      COUNT(*) FILTER (WHERE status = 'running') as running,
+      COUNT(*) FILTER (WHERE status = 'succeeded') as succeeded,
+      COUNT(*) FILTER (WHERE status = 'failed') as failed,
+      COUNT(*) FILTER (WHERE status = 'cancelling') as cancelling,
+      COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled
+    FROM jobs
+  `);
+  
+  const row = result.rows[0];
+  return {
+    total: parseInt(row.total, 10),
+    byStatus: {
+      queued: parseInt(row.queued, 10),
+      running: parseInt(row.running, 10),
+      succeeded: parseInt(row.succeeded, 10),
+      failed: parseInt(row.failed, 10),
+      cancelling: parseInt(row.cancelling, 10),
+      cancelled: parseInt(row.cancelled, 10),
+    },
+  };
+}
+
+export async function getJobPerformanceStats(): Promise<JobPerformanceStats> {
+  const pool = getPool();
+  
+  // Get success rate
+  const successRateResult = await pool.query(`
+    SELECT 
+      COUNT(*) FILTER (WHERE status IN ('succeeded', 'failed', 'cancelled')) as total_finished,
+      COUNT(*) FILTER (WHERE status = 'succeeded') as succeeded_count
+    FROM jobs
+    WHERE finished_at IS NOT NULL
+  `);
+  
+  const finishedRow = successRateResult.rows[0];
+  const totalFinished = parseInt(finishedRow.total_finished, 10);
+  const succeededCount = parseInt(finishedRow.succeeded_count, 10);
+  const successRate = totalFinished > 0 ? succeededCount / totalFinished : 0;
+  
+  // Get average processing time (time from started_at to finished_at)
+  const processingTimeResult = await pool.query(`
+    SELECT 
+      AVG(EXTRACT(EPOCH FROM (finished_at - started_at))) as avg_processing_time
+    FROM jobs
+    WHERE started_at IS NOT NULL 
+      AND finished_at IS NOT NULL
+      AND status IN ('succeeded', 'failed')
+  `);
+  
+  const avgProcessingTime = processingTimeResult.rows[0].avg_processing_time 
+    ? parseFloat(processingTimeResult.rows[0].avg_processing_time) 
+    : null;
+  
+  // Get average queue time (time from queued_at to started_at)
+  const queueTimeResult = await pool.query(`
+    SELECT 
+      AVG(EXTRACT(EPOCH FROM (started_at - queued_at))) as avg_queue_time
+    FROM jobs
+    WHERE queued_at IS NOT NULL 
+      AND started_at IS NOT NULL
+  `);
+  
+  const avgQueueTime = queueTimeResult.rows[0].avg_queue_time 
+    ? parseFloat(queueTimeResult.rows[0].avg_queue_time) 
+    : null;
+  
+  // Get retry rate (jobs with attempts > 1)
+  const retryRateResult = await pool.query(`
+    SELECT 
+      COUNT(*) FILTER (WHERE attempts > 1) as retried_count,
+      COUNT(*) as total_jobs
+    FROM jobs
+    WHERE status IN ('succeeded', 'failed', 'cancelled')
+  `);
+  
+  const retryRow = retryRateResult.rows[0];
+  const totalJobs = parseInt(retryRow.total_jobs, 10);
+  const retriedCount = parseInt(retryRow.retried_count, 10);
+  const retryRate = totalJobs > 0 ? retriedCount / totalJobs : 0;
+  
+  return {
+    successRate,
+    avgProcessingTime,
+    avgQueueTime,
+    retryRate,
+  };
+}
+
+export async function getJobThroughput(): Promise<JobThroughput> {
+  const pool = getPool();
+  
+  const result = await pool.query(`
+    SELECT 
+      COUNT(*) FILTER (WHERE finished_at >= NOW() - INTERVAL '1 hour') as last_hour,
+      COUNT(*) FILTER (WHERE finished_at >= NOW() - INTERVAL '1 day') as last_day,
+      COUNT(*) FILTER (WHERE finished_at >= NOW() - INTERVAL '7 days') as last_week
+    FROM jobs
+    WHERE finished_at IS NOT NULL
+      AND status IN ('succeeded', 'failed', 'cancelled')
+  `);
+  
+  const row = result.rows[0];
+  return {
+    lastHour: parseInt(row.last_hour, 10),
+    lastDay: parseInt(row.last_day, 10),
+    lastWeek: parseInt(row.last_week, 10),
+  };
+}
+
+export async function getJobMetricsByDefinition(): Promise<DefinitionMetrics[]> {
+  const pool = getPool();
+  
+  const result = await pool.query(`
+    SELECT 
+      definition_key,
+      definition_version,
+      COUNT(*) as total,
+      COUNT(*) FILTER (WHERE status = 'queued') as queued,
+      COUNT(*) FILTER (WHERE status = 'running') as running,
+      COUNT(*) FILTER (WHERE status = 'succeeded') as succeeded,
+      COUNT(*) FILTER (WHERE status = 'failed') as failed,
+      COUNT(*) FILTER (WHERE status = 'cancelling') as cancelling,
+      COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled,
+      COUNT(*) FILTER (WHERE status = 'succeeded' AND finished_at IS NOT NULL) as succeeded_finished,
+      COUNT(*) FILTER (WHERE status IN ('succeeded', 'failed', 'cancelled') AND finished_at IS NOT NULL) as total_finished,
+      AVG(EXTRACT(EPOCH FROM (finished_at - started_at))) FILTER (WHERE started_at IS NOT NULL AND finished_at IS NOT NULL AND status IN ('succeeded', 'failed')) as avg_processing_time,
+      AVG(EXTRACT(EPOCH FROM (started_at - queued_at))) FILTER (WHERE queued_at IS NOT NULL AND started_at IS NOT NULL) as avg_queue_time
+    FROM jobs
+    GROUP BY definition_key, definition_version
+    ORDER BY definition_key, definition_version
+  `);
+  
+  return result.rows.map((row) => {
+    const totalFinished = parseInt(row.total_finished, 10);
+    const succeededFinished = parseInt(row.succeeded_finished, 10);
+    const successRate = totalFinished > 0 ? succeededFinished / totalFinished : 0;
+    
+    return {
+      definitionKey: row.definition_key,
+      definitionVersion: row.definition_version,
+      total: parseInt(row.total, 10),
+      byStatus: {
+        queued: parseInt(row.queued, 10),
+        running: parseInt(row.running, 10),
+        succeeded: parseInt(row.succeeded, 10),
+        failed: parseInt(row.failed, 10),
+        cancelling: parseInt(row.cancelling, 10),
+        cancelled: parseInt(row.cancelled, 10),
+      },
+      successRate,
+      avgProcessingTime: row.avg_processing_time ? parseFloat(row.avg_processing_time) : null,
+      avgQueueTime: row.avg_queue_time ? parseFloat(row.avg_queue_time) : null,
+    };
+  });
+}
+
+export async function getJobThroughputTimeSeries(hours: number = 24): Promise<ThroughputDataPoint[]> {
+  const pool = getPool();
+  
+  const result = await pool.query(`
+    SELECT 
+      DATE_TRUNC('hour', finished_at) as period,
+      COUNT(*) FILTER (WHERE status = 'succeeded') as completed,
+      COUNT(*) FILTER (WHERE status = 'failed') as failed
+    FROM jobs
+    WHERE finished_at >= NOW() - INTERVAL '1 hour' * $1
+      AND finished_at IS NOT NULL
+      AND status IN ('succeeded', 'failed')
+    GROUP BY DATE_TRUNC('hour', finished_at)
+    ORDER BY period ASC
+  `, [hours]);
+  
+  return result.rows.map((row) => ({
+    period: row.period.toISOString(),
+    completed: parseInt(row.completed, 10),
+    failed: parseInt(row.failed, 10),
   }));
 }
 

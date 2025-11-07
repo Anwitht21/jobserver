@@ -13,6 +13,7 @@
     "register-definitions": "tsx src/db/register-definitions.ts",
     "test:e2e": "tsx src/test/e2e.ts",
     "test:jobs": "tsx src/test/test-job-definitions.ts",
+    "test:metrics": "tsx src/test/test-metrics.ts",
     "migrate:create": "tsx src/db/create-migration.ts",
     "test": "jest"
   },

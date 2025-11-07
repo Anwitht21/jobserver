@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { createJob, getJobById, listJobs, requestCancellation, getJobEvents } from '../db/jobs';
 import { CreateJobRequest } from '../types';
 import { runMigrations } from '../db/migrations';
+import { metricsCache } from '../utils/metrics-cache';
 
 const app = express();
 app.use(express.json());
@@ -156,6 +157,78 @@ app.get('/v1/jobs/:jobId/events', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('Error getting job events:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /v1/metrics
+app.get('/v1/metrics', async (req: Request, res: Response) => {
+  try {
+    const ttl = req.query.ttl ? parseInt(req.query.ttl as string, 10) * 1000 : undefined;
+    
+    const [summary, performance, throughput] = await Promise.all([
+      metricsCache.getMetricsSummary(ttl),
+      metricsCache.getPerformanceStats(ttl),
+      metricsCache.getThroughput(ttl),
+    ]);
+    
+    res.json({
+      summary,
+      performance,
+      throughput,
+    });
+  } catch (error) {
+    console.error('Error getting metrics:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /v1/metrics/definitions
+app.get('/v1/metrics/definitions', async (req: Request, res: Response) => {
+  try {
+    const ttl = req.query.ttl ? parseInt(req.query.ttl as string, 10) * 1000 : undefined;
+    const definitions = await metricsCache.getMetricsByDefinition(ttl);
+    
+    res.json({
+      definitions,
+    });
+  } catch (error) {
+    console.error('Error getting definition metrics:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /v1/metrics/throughput
+app.get('/v1/metrics/throughput', async (req: Request, res: Response) => {
+  try {
+    const hours = req.query.hours ? parseInt(req.query.hours as string, 10) : 24;
+    const ttl = req.query.ttl ? parseInt(req.query.ttl as string, 10) * 1000 : undefined;
+    
+    if (hours < 1 || hours > 168) {
+      res.status(400).json({ error: 'Hours must be between 1 and 168 (7 days)' });
+      return;
+    }
+    
+    const data = await metricsCache.getThroughputTimeSeries(hours, ttl);
+    
+    res.json({
+      data,
+    });
+  } catch (error) {
+    console.error('Error getting throughput metrics:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /v1/metrics/performance
+app.get('/v1/metrics/performance', async (req: Request, res: Response) => {
+  try {
+    const ttl = req.query.ttl ? parseInt(req.query.ttl as string, 10) * 1000 : undefined;
+    const performance = await metricsCache.getPerformanceStats(ttl);
+    
+    res.json(performance);
+  } catch (error) {
+    console.error('Error getting performance metrics:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
