@@ -30,9 +30,8 @@ export function Navigation({ onRefresh, isRefreshing }: NavigationProps) {
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="container flex h-16 items-center justify-between">
-        <div className="flex items-center space-x-8">
-          <nav className="flex items-center space-x-6 text-sm font-medium">
+      <div className="flex h-16 items-center justify-between px-6">
+        <nav className="flex items-center space-x-6 text-sm font-medium">
             {navigation.map((item) => {
               const isActive = pathname === item.href;
               return (
@@ -50,7 +49,6 @@ export function Navigation({ onRefresh, isRefreshing }: NavigationProps) {
               );
             })}
           </nav>
-        </div>
 
         <div className="flex items-center space-x-2">
           <ThemeToggle />
