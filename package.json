@@ -1,0 +1,37 @@
+{
+  "name": "jobserver",
+  "version": "0.1.0",
+  "description": "A horizontally scalable job execution server",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "dev:api": "tsx watch src/api/index.ts",
+    "dev:worker": "tsx watch src/worker/index.ts",
+    "dev:scheduler": "tsx watch src/scheduler/index.ts",
+    "migrate": "tsx src/db/migrate.ts",
+    "migrate:create": "tsx src/db/create-migration.ts",
+    "test": "jest"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "pg": "^8.11.3",
+    "express": "^4.18.2",
+    "zod": "^3.22.4",
+    "uuid": "^9.0.1",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.10.6",
+    "@types/pg": "^8.10.9",
+    "@types/uuid": "^9.0.7",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}
+
