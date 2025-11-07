@@ -9,12 +9,12 @@ interface StatusPieChartProps {
 }
 
 const STATUS_COLORS = {
-  queued: 'hsl(var(--chart-1))',
-  running: 'hsl(var(--chart-2))',
-  succeeded: 'hsl(var(--chart-3))',
-  failed: 'hsl(var(--destructive))',
-  cancelling: 'hsl(var(--chart-4))',
-  cancelled: 'hsl(var(--chart-5))',
+  queued: '#8b5cf6',
+  running: '#06b6d4',
+  succeeded: '#10b981',
+  failed: '#ef4444',
+  cancelling: '#f59e0b',
+  cancelled: '#6b7280',
 } as const;
 
 export function StatusPieChart({ data, className }: StatusPieChartProps) {
