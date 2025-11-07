@@ -1,9 +1,14 @@
 import { Job, JobDefinition, JobContext } from '../types';
 import { createJobEvent, updateJobStatus, incrementAttempts, scheduleRetry, updateHeartbeat, getJobById, moveJobToDlq } from '../db/jobs';
 
-export function calculateBackoffDelay(attempt: number, baseSeconds: number = 1, maxSeconds: number = 3600): number {
+export function calculateBackoffDelay(
+  attempt: number, 
+  baseSeconds: number = parseInt(process.env.BACKOFF_BASE_SECONDS || '1', 10),
+  maxSeconds: number = parseInt(process.env.BACKOFF_MAX_SECONDS || '3600', 10)
+): number {
+  const jitterPercent = parseFloat(process.env.BACKOFF_JITTER_PERCENT || '0.3');
   const exponentialDelay = baseSeconds * Math.pow(2, attempt);
-  const jitter = Math.random() * 0.3 * exponentialDelay; // 0-30% jitter
+  const jitter = Math.random() * jitterPercent * exponentialDelay;
   return Math.min(maxSeconds, exponentialDelay + jitter);
 }
 
@@ -64,6 +69,7 @@ export async function executeJob(
     }, (leaseDurationSeconds / 2) * 1000); // Heartbeat at half lease duration
 
     // Check for cancellation requests
+    const cancelCheckIntervalMs = parseInt(process.env.CANCEL_CHECK_INTERVAL_MS || '1000', 10);
     cancelCheckInterval = setInterval(async () => {
       try {
         const currentJob = await getJobById(job.id);
@@ -74,7 +80,7 @@ export async function executeJob(
       } catch (error) {
         console.error(`[${job.id}] Failed to check cancellation:`, error);
       }
-    }, 1000);
+    }, cancelCheckIntervalMs);
 
     // Execute the job
     await definition.run(job.params, context);

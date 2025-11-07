@@ -20,6 +20,8 @@
     "test:scheduler": "tsx src/test/test-scheduler.ts",
     "test:notifications": "tsx src/test/test-notifications.ts",
     "test:dlq": "tsx src/test/test-dlq.ts",
+    "test:edge-cases": "tsx src/test/test-edge-cases.ts",
+    "test:all": "tsx src/test/run-all-tests.ts",
     "migrate:create": "tsx src/db/create-migration.ts",
     "test": "jest"
   },

@@ -5,18 +5,18 @@ let pool: Pool | null = null;
 export function getPool(): Pool {
   if (!pool) {
     const databaseUrl = process.env.DATABASE_URL;
-    // if (!databaseUrl) {
-    //   throw new Error(
-    //     'DATABASE_URL environment variable is not set. ' +
-    //     'Please set it to your PostgreSQL connection string, e.g.: ' +
-    //     'export DATABASE_URL=postgresql://username:password@localhost:5432/jobserver'
-    //   );
-    // }
+    if (!databaseUrl) {
+      throw new Error(
+        'DATABASE_URL environment variable is not set. ' +
+        'Please set it to your PostgreSQL connection string, e.g.: ' +
+        'export DATABASE_URL=postgresql://username:password@localhost:5432/jobserver'
+      );
+    }
     pool = new Pool({
       connectionString: databaseUrl,
-      max: 20,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
+      max: parseInt(process.env.DB_POOL_MAX || '20', 10),
+      idleTimeoutMillis: parseInt(process.env.DB_POOL_IDLE_TIMEOUT_MS || '30000', 10),
+      connectionTimeoutMillis: parseInt(process.env.DB_POOL_CONNECTION_TIMEOUT_MS || '2000', 10),
     });
   }
   return pool;

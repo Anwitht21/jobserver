@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { createJobDefinition } from '../db/jobs';
+import { runMigrations } from '../db/migrations';
 
 const API_URL = process.env.API_URL || 'http://localhost:3000';
 
@@ -578,6 +580,20 @@ async function runAllTests() {
   log('\n' + '='.repeat(60), colors.blue);
   log('  JOB SERVER END-TO-END TEST SUITE', colors.blue);
   log('='.repeat(60), colors.blue);
+  
+  // Ensure migrations are run and job definitions are registered
+  try {
+    await runMigrations();
+    log('✓ Migrations completed', colors.green);
+    
+    // Register required job definitions for e2e tests
+    await createJobDefinition('echo', 1, 3, 3600, 0);
+    await createJobDefinition('failing', 1, 3, 3600, 0);
+    log('✓ Job definitions registered', colors.green);
+  } catch (error) {
+    log(`⚠ Warning: Error setting up test environment: ${error}`, colors.yellow);
+    // Continue anyway - definitions might already exist
+  }
   
   const results: { name: string; passed: boolean }[] = [];
   

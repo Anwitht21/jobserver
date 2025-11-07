@@ -12,12 +12,12 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 const createJobSchema = z.object({
-  definitionKey: z.string(),
-  definitionVersion: z.number().optional(),
+  definitionKey: z.string().min(1).max(255),
+  definitionVersion: z.number().int().positive().optional(),
   params: z.record(z.unknown()).optional(),
-  priority: z.number().optional(),
-  maxAttempts: z.number().optional(),
-  idempotencyKey: z.string().optional(),
+  priority: z.number().int().min(-2147483648).max(2147483647).optional(),
+  maxAttempts: z.number().int().positive().max(1000).optional(),
+  idempotencyKey: z.string().max(255).optional(),
 });
 
 // POST /v1/jobs
@@ -52,6 +52,14 @@ app.post('/v1/jobs', async (req: Request, res: Response) => {
 app.get('/v1/jobs/:jobId', async (req: Request, res: Response) => {
   try {
     const { jobId } = req.params;
+    
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(jobId)) {
+      res.status(400).json({ error: 'Invalid job ID format' });
+      return;
+    }
+    
     const job = await getJobById(jobId);
     
     if (!job) {
@@ -83,6 +91,14 @@ app.get('/v1/jobs/:jobId', async (req: Request, res: Response) => {
 app.post('/v1/jobs/:jobId/cancel', async (req: Request, res: Response) => {
   try {
     const { jobId } = req.params;
+    
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(jobId)) {
+      res.status(400).json({ error: 'Invalid job ID format' });
+      return;
+    }
+    
     const job = await getJobById(jobId);
     
     if (!job) {
@@ -108,8 +124,15 @@ app.get('/v1/jobs', async (req: Request, res: Response) => {
   try {
     const status = req.query.status as string | undefined;
     const definitionKey = req.query.definitionKey as string | undefined;
-    const limit = parseInt(req.query.limit as string || '100', 10);
-    const offset = parseInt(req.query.offset as string || '0', 10);
+    const limit = Math.min(parseInt(req.query.limit as string || '100', 10), 1000); // Max 1000
+    const offset = Math.max(parseInt(req.query.offset as string || '0', 10), 0); // Min 0
+    
+    // Validate status if provided
+    const validStatuses = ['queued', 'running', 'succeeded', 'failed', 'cancelling', 'cancelled'];
+    if (status && !validStatuses.includes(status)) {
+      res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+      return;
+    }
     
     const jobs = await listJobs(status as any, definitionKey, limit, offset);
     
@@ -137,6 +160,14 @@ app.get('/v1/jobs', async (req: Request, res: Response) => {
 app.get('/v1/jobs/:jobId/events', async (req: Request, res: Response) => {
   try {
     const { jobId } = req.params;
+    
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(jobId)) {
+      res.status(400).json({ error: 'Invalid job ID format' });
+      return;
+    }
+    
     const job = await getJobById(jobId);
     
     if (!job) {
@@ -237,8 +268,8 @@ app.get('/v1/metrics/performance', async (req: Request, res: Response) => {
 app.get('/v1/dlq', async (req: Request, res: Response) => {
   try {
     const definitionKey = req.query.definitionKey as string | undefined;
-    const limit = parseInt(req.query.limit as string || '100', 10);
-    const offset = parseInt(req.query.offset as string || '0', 10);
+    const limit = Math.min(parseInt(req.query.limit as string || '100', 10), 1000); // Max 1000
+    const offset = Math.max(parseInt(req.query.offset as string || '0', 10), 0); // Min 0
     
     const dlqJobs = await listDlqJobs(definitionKey, limit, offset);
     
@@ -269,6 +300,14 @@ app.get('/v1/dlq', async (req: Request, res: Response) => {
 app.get('/v1/dlq/:dlqJobId', async (req: Request, res: Response) => {
   try {
     const { dlqJobId } = req.params;
+    
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(dlqJobId)) {
+      res.status(400).json({ error: 'Invalid DLQ job ID format' });
+      return;
+    }
+    
     const dlqJob = await getDlqJobById(dlqJobId);
     
     if (!dlqJob) {
@@ -302,7 +341,17 @@ app.get('/v1/dlq/:dlqJobId', async (req: Request, res: Response) => {
 app.post('/v1/dlq/:dlqJobId/retry', async (req: Request, res: Response) => {
   try {
     const { dlqJobId } = req.params;
-    const maxAttempts = req.body.maxAttempts ? parseInt(req.body.maxAttempts, 10) : undefined;
+    
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(dlqJobId)) {
+      res.status(400).json({ error: 'Invalid DLQ job ID format' });
+      return;
+    }
+    
+    const maxAttempts = req.body.maxAttempts 
+      ? Math.max(1, Math.min(parseInt(req.body.maxAttempts, 10), 1000)) // Clamp between 1 and 1000
+      : undefined;
     
     const newJob = await retryDlqJob(dlqJobId, maxAttempts);
     

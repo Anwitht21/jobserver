@@ -10,6 +10,22 @@ export async function createJobDefinition(
   timeoutSeconds: number = 3600,
   concurrencyLimit: number = 0
 ): Promise<void> {
+  // Validate inputs
+  if (!key || key.length > 255) {
+    throw new Error('Job definition key must be between 1 and 255 characters');
+  }
+  if (version < 1 || version > 2147483647) {
+    throw new Error('Job definition version must be a positive integer');
+  }
+  if (defaultMaxAttempts < 1 || defaultMaxAttempts > 1000) {
+    throw new Error('defaultMaxAttempts must be between 1 and 1000');
+  }
+  if (timeoutSeconds < 1) {
+    throw new Error('timeoutSeconds must be positive');
+  }
+  if (concurrencyLimit < 0) {
+    throw new Error('concurrencyLimit must be non-negative');
+  }
   const pool = getPool();
   await pool.query(
     `INSERT INTO job_definitions (key, version, default_max_attempts, timeout_seconds, concurrency_limit)
@@ -25,6 +41,23 @@ export async function createJobDefinition(
 export async function createJob(request: CreateJobRequest): Promise<Job> {
   const pool = getPool();
   const definitionVersion = request.definitionVersion ?? 1;
+  
+  // Validate inputs
+  if (!request.definitionKey || request.definitionKey.length > 255) {
+    throw new Error('definitionKey must be between 1 and 255 characters');
+  }
+  if (definitionVersion < 1) {
+    throw new Error('definitionVersion must be positive');
+  }
+  if (request.maxAttempts !== undefined && (request.maxAttempts < 1 || request.maxAttempts > 1000)) {
+    throw new Error('maxAttempts must be between 1 and 1000');
+  }
+  if (request.priority !== undefined && (request.priority < -2147483648 || request.priority > 2147483647)) {
+    throw new Error('priority must be within integer range');
+  }
+  if (request.idempotencyKey && request.idempotencyKey.length > 255) {
+    throw new Error('idempotencyKey must be 255 characters or less');
+  }
   
   // Check if job definition exists first
   const defCheckResult = await pool.query(
@@ -88,6 +121,28 @@ export async function createJob(request: CreateJobRequest): Promise<Job> {
     
     return job;
   } catch (error: any) {
+    // Handle unique constraint violation for idempotency key
+    // This can happen when multiple concurrent requests try to create the same idempotency key
+    if (error.code === '23505' && error.constraint === 'uq_jobs_idemp') {
+      // Another request already created this job, fetch and return it
+      if (request.idempotencyKey) {
+        const existing = await pool.query(
+          `SELECT * FROM jobs
+           WHERE idempotency_key = $1
+             AND definition_key = $2
+             AND definition_version = $3
+           LIMIT 1`,
+          [request.idempotencyKey, request.definitionKey, definitionVersion]
+        );
+        
+        if (existing.rows.length > 0) {
+          return mapRowToJob(existing.rows[0]);
+        }
+      }
+      // If we can't find it, re-throw the error
+      throw error;
+    }
+    
     // Handle foreign key constraint violations
     if (error.code === '23503') {
       throw new Error(
@@ -282,6 +337,9 @@ export async function listJobs(
   limit: number = 100,
   offset: number = 0
 ): Promise<Job[]> {
+  // Validate and clamp limits
+  const clampedLimit = Math.max(1, Math.min(limit, 1000)); // Between 1 and 1000
+  const clampedOffset = Math.max(0, offset); // Non-negative
   const pool = getPool();
   const conditions: string[] = [];
   const values: unknown[] = [];
@@ -306,7 +364,7 @@ export async function listJobs(
      ${whereClause}
      ORDER BY queued_at DESC
      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
-    [...values, limit, offset]
+    [...values, clampedLimit, clampedOffset]
   );
   
   return result.rows.map(mapRowToJob);
@@ -641,6 +699,9 @@ export async function listDlqJobs(
   limit: number = 100,
   offset: number = 0
 ): Promise<DlqJob[]> {
+  // Validate and clamp limits
+  const clampedLimit = Math.max(1, Math.min(limit, 1000)); // Between 1 and 1000
+  const clampedOffset = Math.max(0, offset); // Non-negative
   const pool = getPool();
   const conditions: string[] = [];
   const values: unknown[] = [];
@@ -659,7 +720,7 @@ export async function listDlqJobs(
      ${whereClause}
      ORDER BY moved_to_dlq_at DESC
      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
-    [...values, limit, offset]
+    [...values, clampedLimit, clampedOffset]
   );
   
   return result.rows.map(mapRowToDlqJob);

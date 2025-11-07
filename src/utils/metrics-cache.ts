@@ -14,7 +14,7 @@ interface CacheEntry<T> {
 
 class MetricsCache {
   private cache: Map<string, CacheEntry<any>> = new Map();
-  private defaultTtl: number = 30 * 1000; // 30 seconds default TTL
+  private defaultTtl: number = parseInt(process.env.METRICS_CACHE_TTL_MS || '30000', 10); // Configurable default TTL
 
   private getCacheKey(key: string): string {
     return `metrics:${key}`;
