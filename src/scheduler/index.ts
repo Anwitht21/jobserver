@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { getPool } from '../db/connection';
 import { createJob } from '../db/jobs';
 import { validate } from 'node-cron';
-import { parseExpression } from 'cron-parser';
+import { CronExpressionParser } from 'cron-parser';
 import { runMigrations } from '../db/migrations';
 import { notifyJobAvailable } from '../db/notifications';
 
@@ -174,7 +174,7 @@ class Scheduler {
   private cronMatchesTime(cronExpr: string, time: Date): boolean {
     try {
       // Use cron-parser to get the next execution time
-      const interval = parseExpression(cronExpr, {
+      const interval = CronExpressionParser.parse(cronExpr, {
         currentDate: time,
         tz: 'UTC'
       });
