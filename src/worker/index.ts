@@ -139,6 +139,194 @@ async function registerExampleJobs() {
       throw new Error('Intentional failure');
     },
   });
+
+  // Video encoding simulation - CPU-intensive task
+  jobRegistry.register({
+    key: 'encode.video',
+    version: 1,
+    defaultMaxAttempts: 2,
+    timeoutSeconds: 7200, // 2 hours
+    concurrencyLimit: 3, // Max 3 concurrent video encodings
+    run: async (params, ctx) => {
+      const { videoId, format, quality } = params as { videoId: string; format?: string; quality?: string };
+      ctx.logger.info('Video encoding started', { videoId, format: format || 'mp4', quality: quality || '1080p' });
+      
+      // Simulate encoding progress
+      const steps = ['Analyzing video', 'Extracting frames', 'Encoding', 'Applying filters', 'Finalizing'];
+      for (let i = 0; i < steps.length; i++) {
+        if (ctx.abortSignal.aborted) {
+          throw new Error('Video encoding cancelled');
+        }
+        ctx.logger.info(`Encoding progress: ${steps[i]} (${i + 1}/${steps.length})`);
+        await ctx.emitEvent('progress', { step: steps[i], progress: ((i + 1) / steps.length) * 100 });
+        // Simulate encoding time (longer for higher quality)
+        const delay = quality === '4k' ? 3000 : quality === '1080p' ? 2000 : 1000;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+      
+      ctx.logger.info('Video encoding completed', { videoId, outputFormat: format || 'mp4' });
+    },
+    onSuccess: async (ctx) => {
+      ctx.logger.info('Video encoding succeeded - ready for delivery');
+    },
+  });
+
+  // Math computation - CPU-intensive calculation
+  jobRegistry.register({
+    key: 'compute.math',
+    version: 1,
+    defaultMaxAttempts: 3,
+    run: async (params, ctx) => {
+      const { operation, numbers } = params as { operation: string; numbers: number[] };
+      ctx.logger.info('Math computation started', { operation, numbers });
+      
+      let result: number;
+      
+      switch (operation) {
+        case 'sum':
+          result = numbers.reduce((a, b) => a + b, 0);
+          break;
+        case 'product':
+          result = numbers.reduce((a, b) => a * b, 1);
+          break;
+        case 'fibonacci':
+          // Compute nth Fibonacci number (CPU-intensive)
+          const n = numbers[0] || 30;
+          const fib = (n: number): number => {
+            if (n <= 1) return n;
+            return fib(n - 1) + fib(n - 2);
+          };
+          result = fib(n);
+          break;
+        case 'prime':
+          // Check if number is prime (CPU-intensive)
+          const num = numbers[0] || 1000000;
+          const isPrime = (n: number): boolean => {
+            if (n < 2) return false;
+            for (let i = 2; i * i <= n; i++) {
+              if (n % i === 0) return false;
+            }
+            return true;
+          };
+          result = isPrime(num) ? 1 : 0;
+          break;
+        default:
+          throw new Error(`Unknown operation: ${operation}`);
+      }
+      
+      ctx.logger.info('Math computation completed', { operation, result });
+      await ctx.emitEvent('result', { operation, result, input: numbers });
+    },
+  });
+
+  // Data processing - I/O simulation
+  jobRegistry.register({
+    key: 'process.data',
+    version: 1,
+    defaultMaxAttempts: 3,
+    run: async (params, ctx) => {
+      const { dataset, operation } = params as { dataset: string; operation: string };
+      ctx.logger.info('Data processing started', { dataset, operation });
+      
+      // Simulate reading data
+      await new Promise(resolve => setTimeout(resolve, 500));
+      ctx.logger.info('Data loaded', { records: 1000 });
+      
+      // Simulate processing
+      const steps = ['Validating', 'Transforming', 'Aggregating', 'Exporting'];
+      for (const step of steps) {
+        if (ctx.abortSignal.aborted) {
+          throw new Error('Data processing cancelled');
+        }
+        ctx.logger.info(`Processing: ${step}`);
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      
+      ctx.logger.info('Data processing completed', { dataset, operation, outputRecords: 950 });
+    },
+    onSuccess: async (ctx) => {
+      ctx.logger.info('Data processing succeeded - results available');
+    },
+  });
+
+  // API call simulation - network I/O
+  jobRegistry.register({
+    key: 'call.api',
+    version: 1,
+    defaultMaxAttempts: 3,
+    timeoutSeconds: 300, // 5 minutes
+    run: async (params, ctx) => {
+      const { endpoint, method, payload } = params as { 
+        endpoint: string; 
+        method?: string; 
+        payload?: Record<string, unknown> 
+      };
+      ctx.logger.info('API call started', { endpoint, method: method || 'GET' });
+      
+      // Simulate network delay
+      await new Promise(resolve => setTimeout(resolve, 800));
+      
+      // Simulate API response
+      const response = {
+        status: 200,
+        data: { message: 'API call successful', endpoint, timestamp: new Date().toISOString() },
+      };
+      
+      ctx.logger.info('API call completed', { endpoint, status: response.status });
+      await ctx.emitEvent('api_response', response);
+    },
+    onFail: async (ctx) => {
+      ctx.logger.error('API call failed - may need to retry', { error: ctx.error });
+    },
+  });
+
+  // Batch processing - multiple items
+  jobRegistry.register({
+    key: 'process.batch',
+    version: 1,
+    defaultMaxAttempts: 2,
+    concurrencyLimit: 5, // Max 5 concurrent batch jobs
+    run: async (params, ctx) => {
+      const { items, batchSize } = params as { items: string[]; batchSize?: number };
+      const size = batchSize || 10;
+      const totalItems = items?.length || 50;
+      
+      ctx.logger.info('Batch processing started', { totalItems, batchSize: size });
+      
+      let processed = 0;
+      const batches = Math.ceil(totalItems / size);
+      
+      for (let i = 0; i < batches; i++) {
+        if (ctx.abortSignal.aborted) {
+          throw new Error('Batch processing cancelled');
+        }
+        
+        const start = i * size;
+        const end = Math.min(start + size, totalItems);
+        const batch = items?.slice(start, end) || [];
+        
+        ctx.logger.info(`Processing batch ${i + 1}/${batches}`, { items: batch.length });
+        
+        // Simulate processing each item in batch
+        for (const item of batch) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          processed++;
+        }
+        
+        await ctx.emitEvent('batch_progress', { 
+          batch: i + 1, 
+          totalBatches: batches, 
+          processed, 
+          total: totalItems 
+        });
+      }
+      
+      ctx.logger.info('Batch processing completed', { totalProcessed: processed });
+    },
+    onSuccess: async (ctx) => {
+      ctx.logger.info('All batches processed successfully');
+    },
+  });
 }
 
 async function main() {

@@ -37,6 +37,14 @@ export async function executeJob(
   };
 
   try {
+    // Check if cancellation was already requested before starting
+    if (job.cancelRequestedAt) {
+      console.log(`[${job.id}] Job already cancelled before execution started`);
+      await updateJobStatus(job.id, 'cancelled');
+      await createJobEvent(job.id, 'cancelled', { reason: 'cancelled_before_execution' });
+      return;
+    }
+    
     // Emit started event
     await createJobEvent(job.id, 'started');
     
@@ -116,6 +124,15 @@ export async function executeJob(
     const errorSummary = errorMessage.length > 500 ? errorMessage.substring(0, 500) : errorMessage;
     
     console.error(`[${job.id}] Job execution failed:`, error);
+    
+    // Check if job is being cancelled
+    const currentJob = await getJobById(job.id);
+    if (currentJob?.status === 'cancelling' || currentJob?.cancelRequestedAt) {
+      console.log(`[${job.id}] Job was cancelled, marking as cancelled`);
+      await updateJobStatus(job.id, 'cancelled', 'Job was cancelled');
+      await createJobEvent(job.id, 'cancelled', { reason: 'cancelled_during_execution' });
+      return; // Don't retry or fail
+    }
     
     await incrementAttempts(job.id);
     const updatedJob = await getJobById(job.id);

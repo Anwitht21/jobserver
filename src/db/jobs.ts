@@ -103,10 +103,12 @@ export async function claimJob(workerId: string, leaseDurationSeconds: number): 
   const pool = getPool();
   
   // Check for scheduled jobs first, then regular queued jobs
+  // Exclude jobs that have been cancelled
   const result = await pool.query(
     `SELECT id FROM jobs
      WHERE status = 'queued'
        AND (scheduled_at IS NULL OR scheduled_at <= NOW())
+       AND cancel_requested_at IS NULL
      ORDER BY priority DESC, queued_at ASC
      FOR UPDATE SKIP LOCKED
      LIMIT 1`
@@ -203,10 +205,28 @@ export async function requestCancellation(jobId: string): Promise<void> {
   await pool.query(
     `UPDATE jobs
      SET cancel_requested_at = NOW(),
-         status = CASE WHEN status = 'running' THEN 'cancelling' ELSE status END
+         status = CASE 
+           WHEN status = 'running' THEN 'cancelling'
+           WHEN status = 'queued' THEN 'cancelled'
+           ELSE status 
+         END,
+         finished_at = CASE 
+           WHEN status = 'queued' THEN NOW()
+           ELSE finished_at
+         END
      WHERE id = $1`,
     [jobId]
   );
+  
+  // Emit cancelled event for queued jobs
+  const result = await pool.query(
+    `SELECT status FROM jobs WHERE id = $1`,
+    [jobId]
+  );
+  
+  if (result.rows.length > 0 && result.rows[0].status === 'cancelled') {
+    await createJobEvent(jobId, 'cancelled', { reason: 'cancelled_while_queued' });
+  }
 }
 
 export async function reclaimOrphanedJobs(leaseDurationSeconds: number): Promise<number> {
