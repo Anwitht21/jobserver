@@ -1,6 +1,7 @@
 import { getPool } from './connection';
 import { Job, JobStatus, CreateJobRequest, JobEvent, JobMetricsSummary, JobPerformanceStats, JobThroughput, DefinitionMetrics, ThroughputDataPoint, JobStatusCounts } from '../types';
 import { v4 as uuidv4 } from 'uuid';
+import { notifyJobAvailable } from './notifications';
 
 export async function createJobDefinition(
   key: string,
@@ -77,7 +78,15 @@ export async function createJob(request: CreateJobRequest): Promise<Job> {
       ]
     );
     
-    return mapRowToJob(result.rows[0]);
+    const job = mapRowToJob(result.rows[0]);
+    
+    // Notify workers that a new job is available
+    // Don't await to avoid blocking job creation
+    notifyJobAvailable().catch((error) => {
+      console.error('[createJob] Error sending notification:', error);
+    });
+    
+    return job;
   } catch (error: any) {
     // Handle foreign key constraint violations
     if (error.code === '23503') {
@@ -242,7 +251,16 @@ export async function reclaimOrphanedJobs(leaseDurationSeconds: number): Promise
        AND lease_expires_at < NOW()
      RETURNING id`
   );
-  return result.rowCount ?? 0;
+  const reclaimed = result.rowCount ?? 0;
+  
+  // Notify workers if any jobs were reclaimed
+  if (reclaimed > 0) {
+    notifyJobAvailable().catch((error) => {
+      console.error('[reclaimOrphanedJobs] Error sending notification:', error);
+    });
+  }
+  
+  return reclaimed;
 }
 
 export async function listJobs(

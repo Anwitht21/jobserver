@@ -4,6 +4,7 @@ import { createJob } from '../db/jobs';
 import { validate } from 'node-cron';
 import { parseExpression } from 'cron-parser';
 import { runMigrations } from '../db/migrations';
+import { notifyJobAvailable } from '../db/notifications';
 
 interface Schedule {
   id: string;
@@ -129,6 +130,7 @@ class Scheduler {
             );
 
             console.log(`[Scheduler] Enqueued job for schedule ${schedule.id} (${schedule.definitionKey})`);
+            // Note: createJob already sends notification, so we don't need to notify here
           }
         } catch (error) {
           console.error(`[Scheduler] Error processing schedule ${schedule.id}:`, error);
