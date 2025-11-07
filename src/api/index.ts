@@ -34,8 +34,16 @@ app.post('/v1/jobs', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Invalid request', details: error.errors });
       return;
     }
+    // Log the full error for debugging
     console.error('Error creating job:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    if (error instanceof Error) {
+      console.error('Error message:', error.message);
+      console.error('Error stack:', error.stack);
+    }
+    res.status(500).json({ 
+      error: 'Internal server error',
+      message: error instanceof Error ? error.message : String(error)
+    });
   }
 });
 

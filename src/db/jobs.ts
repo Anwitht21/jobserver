@@ -25,6 +25,19 @@ export async function createJob(request: CreateJobRequest): Promise<Job> {
   const pool = getPool();
   const definitionVersion = request.definitionVersion ?? 1;
   
+  // Check if job definition exists first
+  const defCheckResult = await pool.query(
+    'SELECT default_max_attempts FROM job_definitions WHERE key = $1 AND version = $2',
+    [request.definitionKey, definitionVersion]
+  );
+  
+  if (defCheckResult.rows.length === 0) {
+    throw new Error(
+      `Job definition "${request.definitionKey}@${definitionVersion}" not found. ` +
+      `Please register it first using: npm run register-definitions`
+    );
+  }
+  
   // Check for idempotency
   if (request.idempotencyKey) {
     const existing = await pool.query(
@@ -43,34 +56,38 @@ export async function createJob(request: CreateJobRequest): Promise<Job> {
   }
   
   const jobId = uuidv4();
+  const maxAttempts = request.maxAttempts ?? defCheckResult.rows[0].default_max_attempts ?? 3;
   
-  // Get default max attempts from definition
-  const defResult = await pool.query(
-    'SELECT default_max_attempts FROM job_definitions WHERE key = $1 AND version = $2',
-    [request.definitionKey, definitionVersion]
-  );
-  
-  const maxAttempts = request.maxAttempts ?? defResult.rows[0]?.default_max_attempts ?? 3;
-  
-  const result = await pool.query(
-    `INSERT INTO jobs (
-      id, definition_key, definition_version, params, status, priority,
-      max_attempts, queued_at, idempotency_key
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8)
-    RETURNING *`,
-    [
-      jobId,
-      request.definitionKey,
-      definitionVersion,
-      JSON.stringify(request.params ?? {}),
-      'queued',
-      request.priority ?? 0,
-      maxAttempts,
-      request.idempotencyKey ?? null,
-    ]
-  );
-  
-  return mapRowToJob(result.rows[0]);
+  try {
+    const result = await pool.query(
+      `INSERT INTO jobs (
+        id, definition_key, definition_version, params, status, priority,
+        max_attempts, queued_at, idempotency_key
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8)
+      RETURNING *`,
+      [
+        jobId,
+        request.definitionKey,
+        definitionVersion,
+        JSON.stringify(request.params ?? {}),
+        'queued',
+        request.priority ?? 0,
+        maxAttempts,
+        request.idempotencyKey ?? null,
+      ]
+    );
+    
+    return mapRowToJob(result.rows[0]);
+  } catch (error: any) {
+    // Handle foreign key constraint violations
+    if (error.code === '23503') {
+      throw new Error(
+        `Job definition "${request.definitionKey}@${definitionVersion}" not found in database. ` +
+        `Please register it first using: npm run register-definitions`
+      );
+    }
+    throw error;
+  }
 }
 
 export async function getJobById(jobId: string): Promise<Job | null> {
@@ -262,7 +279,8 @@ export async function createJobEvent(
     jobId: result.rows[0].job_id,
     eventType: result.rows[0].event_type,
     at: result.rows[0].at,
-    payload: result.rows[0].payload ? JSON.parse(result.rows[0].payload) : null,
+    // PostgreSQL JSONB columns are already parsed as objects by pg library
+    payload: result.rows[0].payload || null,
   };
 }
 
@@ -278,7 +296,8 @@ export async function getJobEvents(jobId: string): Promise<JobEvent[]> {
     jobId: row.job_id,
     eventType: row.event_type,
     at: row.at,
-    payload: row.payload ? JSON.parse(row.payload) : null,
+    // PostgreSQL JSONB columns are already parsed as objects by pg library
+    payload: row.payload || null,
   }));
 }
 
@@ -287,7 +306,8 @@ function mapRowToJob(row: any): Job {
     id: row.id,
     definitionKey: row.definition_key,
     definitionVersion: row.definition_version,
-    params: row.params ? JSON.parse(row.params) : {},
+    // PostgreSQL JSONB columns are already parsed as objects by pg library
+    params: row.params || {},
     status: row.status,
     priority: row.priority,
     attempts: row.attempts,
