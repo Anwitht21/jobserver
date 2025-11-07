@@ -114,46 +114,46 @@ export async function claimJob(workerId: string, leaseDurationSeconds: number): 
 
   try {
     await client.query('BEGIN');
-
-    // Check for scheduled jobs first, then regular queued jobs
-    // Exclude jobs that have been cancelled
+  
+  // Check for scheduled jobs first, then regular queued jobs
+  // Exclude jobs that have been cancelled
     const result = await client.query(
-      `SELECT id FROM jobs
-       WHERE status = 'queued'
-         AND (scheduled_at IS NULL OR scheduled_at <= NOW())
-         AND cancel_requested_at IS NULL
-       ORDER BY priority DESC, queued_at ASC
-       FOR UPDATE SKIP LOCKED
-       LIMIT 1`
-    );
-
-    if (result.rows.length === 0) {
+    `SELECT id FROM jobs
+     WHERE status = 'queued'
+       AND (scheduled_at IS NULL OR scheduled_at <= NOW())
+       AND cancel_requested_at IS NULL
+     ORDER BY priority DESC, queued_at ASC
+     FOR UPDATE SKIP LOCKED
+     LIMIT 1`
+  );
+  
+  if (result.rows.length === 0) {
       await client.query('ROLLBACK');
-      return null;
-    }
-
-    const jobId = result.rows[0].id;
-
-    // Update job to running status
+    return null;
+  }
+  
+  const jobId = result.rows[0].id;
+  
+  // Update job to running status
     const updateResult = await client.query(
-      `UPDATE jobs
-       SET status = 'running',
-           worker_id = $1,
-           started_at = NOW(),
-           heartbeat_at = NOW(),
-           lease_expires_at = NOW() + INTERVAL '1 second' * $2
-       WHERE id = $3
-       RETURNING *`,
-      [workerId, leaseDurationSeconds, jobId]
-    );
-
-    if (updateResult.rows.length === 0) {
+    `UPDATE jobs
+     SET status = 'running',
+         worker_id = $1,
+         started_at = NOW(),
+         heartbeat_at = NOW(),
+         lease_expires_at = NOW() + INTERVAL '1 second' * $2
+     WHERE id = $3
+     RETURNING *`,
+    [workerId, leaseDurationSeconds, jobId]
+  );
+  
+  if (updateResult.rows.length === 0) {
       await client.query('ROLLBACK');
-      return null;
-    }
-
+    return null;
+  }
+  
     await client.query('COMMIT');
-    return mapRowToJob(updateResult.rows[0]);
+  return mapRowToJob(updateResult.rows[0]);
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;

@@ -87,3 +87,46 @@ export interface DlqJob {
   movedToDlqAt: Date;
 }
 
+export interface JobStatusCounts {
+  queued: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  cancelling: number;
+  cancelled: number;
+}
+
+export interface JobMetricsSummary {
+  total: number;
+  byStatus: JobStatusCounts;
+}
+
+export interface JobPerformanceStats {
+  successRate: number;
+  avgProcessingTime: number | null;
+  avgQueueTime: number | null;
+  retryRate: number;
+}
+
+export interface JobThroughput {
+  lastHour: number;
+  lastDay: number;
+  lastWeek: number;
+}
+
+export interface DefinitionMetrics {
+  definitionKey: string;
+  definitionVersion: number;
+  total: number;
+  byStatus: JobStatusCounts;
+  successRate: number;
+  avgProcessingTime: number | null;
+  avgQueueTime: number | null;
+}
+
+export interface ThroughputDataPoint {
+  period: string;
+  completed: number;
+  failed: number;
+}
+
