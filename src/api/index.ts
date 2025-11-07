@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
+import cors from 'cors';
 import { z } from 'zod';
 import { createJob, getJobById, listJobs, requestCancellation, getJobEvents, listDlqJobs, getDlqJobById, retryDlqJob } from '../db/jobs';
 import { CreateJobRequest } from '../types';
@@ -7,6 +8,17 @@ import { runMigrations } from '../db/migrations';
 import { metricsCache } from '../utils/metrics-cache';
 
 const app = express();
+
+// Enable CORS for frontend access
+app.use(cors({
+  origin: [
+    'http://localhost:3001', // Next.js dev server default
+    'http://localhost:3002', // Next.js dev server alternative
+    'http://localhost:3000', // Same origin
+  ],
+  credentials: true,
+}));
+
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
