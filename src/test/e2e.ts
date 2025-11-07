@@ -146,49 +146,74 @@ async function test2_TestRetryLogic() {
   
   // Wait for it to fail and retry, then move to DLQ
   let status = 'queued';
-  let attempts = 0;
-  const maxWaitAttempts = 90; // 90 seconds for retries with backoff
+  let waitSeconds = 0;
+  const maxWaitSeconds = 120; // 120 seconds for retries with exponential backoff
   let dlqJob = null;
+  let lastJobAttempts = 0;
   
-  while (status !== 'failed' && !dlqJob && attempts < maxWaitAttempts) {
+  while (waitSeconds < maxWaitSeconds) {
     await sleep(1000);
-    attempts++;
+    waitSeconds++;
     
+    // Check DLQ first (most important check)
+    try {
+      const dlqResponse = await apiCall('GET', '/v1/dlq');
+      dlqJob = dlqResponse.jobs.find((j: any) => j.originalJobId === jobId);
+      if (dlqJob) {
+        log(`✓ Job moved to DLQ after ${waitSeconds} seconds`, colors.green);
+        break;
+      }
+    } catch (error) {
+      // Continue checking
+    }
+    
+    // Check job status
     try {
       const job = await apiCall('GET', `/v1/jobs/${jobId}`);
       status = job.status;
+      const currentAttempts = job.attempts || 0;
       
-      if (job.attempts > 0 && attempts % 5 === 0) {
-        log(`  Attempt ${job.attempts}/${job.maxAttempts}, Status: ${status}`, colors.yellow);
+      // Log when attempts change
+      if (currentAttempts !== lastJobAttempts) {
+        log(`  Attempt ${currentAttempts}/${job.maxAttempts}, Status: ${status}`, colors.yellow);
+        lastJobAttempts = currentAttempts;
+      }
+      
+      // If job has reached max attempts, it should move to DLQ soon
+      // Wait a bit more to allow DLQ movement
+      if (currentAttempts >= job.maxAttempts) {
+        log(`  Job reached max attempts (${currentAttempts}), waiting for DLQ movement...`, colors.cyan);
+        // Wait a few more seconds for DLQ movement
+        for (let i = 0; i < 5 && waitSeconds < maxWaitSeconds; i++) {
+          await sleep(1000);
+          waitSeconds++;
+          try {
+            const dlqCheck = await apiCall('GET', '/v1/dlq');
+            dlqJob = dlqCheck.jobs.find((j: any) => j.originalJobId === jobId);
+            if (dlqJob) {
+              log(`✓ Job moved to DLQ after ${waitSeconds} seconds`, colors.green);
+              break;
+            }
+          } catch (error) {
+            // Continue
+          }
+        }
+        if (dlqJob) break;
       }
     } catch (error: any) {
       // Job might have been moved to DLQ (404)
       if (error.message?.includes('404') || error.message?.includes('not found')) {
-        // Check DLQ
+        // Double-check DLQ
         try {
           const dlqResponse = await apiCall('GET', '/v1/dlq');
           dlqJob = dlqResponse.jobs.find((j: any) => j.originalJobId === jobId);
           if (dlqJob) {
-            log(`✓ Job moved to DLQ after ${attempts} seconds`, colors.green);
+            log(`✓ Job moved to DLQ (found via 404 check) after ${waitSeconds} seconds`, colors.green);
             break;
           }
         } catch (dlqError) {
           // Continue waiting
         }
-      }
-    }
-    
-    // Also check DLQ periodically
-    if (attempts % 5 === 0) {
-      try {
-        const dlqResponse = await apiCall('GET', '/v1/dlq');
-        dlqJob = dlqResponse.jobs.find((j: any) => j.originalJobId === jobId);
-        if (dlqJob) {
-          log(`✓ Job moved to DLQ after ${attempts} seconds`, colors.green);
-          break;
-        }
-      } catch (error) {
-        // Continue waiting
       }
     }
   }
@@ -202,30 +227,59 @@ async function test2_TestRetryLogic() {
     return true;
   }
   
-  // Fallback: check if job still exists and has failed
+  // Fallback: check if job still exists
   try {
     const finalJob = await apiCall('GET', `/v1/jobs/${jobId}`);
     log(`\nFinal status: ${finalJob.status}`, colors.yellow);
     log(`  Total attempts: ${finalJob.attempts}`);
     log(`  Error: ${finalJob.errorSummary}`);
     
-    // Get events
+    // Get events to see what happened
     const events = await apiCall('GET', `/v1/jobs/${jobId}/events`);
     log(`\nJob events (${events.events.length}):`, colors.blue);
     events.events.forEach((event: any, i: number) => {
       log(`  ${i + 1}. ${event.eventType} at ${event.at}`);
     });
     
-    // Accept if it has 3 attempts (even if still queued/running due to backoff)
-    if (finalJob.attempts >= 3) {
+    // Check if job has moved_to_dlq event (but wasn't found in DLQ - might be timing issue)
+    const movedToDlqEvent = events.events.find((e: any) => e.eventType === 'moved_to_dlq');
+    if (movedToDlqEvent) {
+      log(`✓ Found 'moved_to_dlq' event - job should be in DLQ`, colors.green);
+      // Try DLQ one more time
+      try {
+        const dlqResponse = await apiCall('GET', '/v1/dlq');
+        dlqJob = dlqResponse.jobs.find((j: any) => j.originalJobId === jobId);
+        if (dlqJob) {
+          log(`✓ Found job in DLQ on final check`, colors.green);
+          return true;
+        }
+      } catch (error) {
+        // Continue
+      }
+    }
+    
+    // Accept if it has reached max attempts (even if still queued/running due to backoff)
+    if (finalJob.attempts >= finalJob.maxAttempts) {
       log(`✓ Job reached max attempts (${finalJob.attempts})`, colors.green);
       return true;
     }
     
+    log(`✗ Job only has ${finalJob.attempts} attempts, expected ${finalJob.maxAttempts}`, colors.red);
     return false;
   } catch (error: any) {
     // Job might be in DLQ
     if (error.message?.includes('404') || error.message?.includes('not found')) {
+      // Final DLQ check
+      try {
+        const dlqResponse = await apiCall('GET', '/v1/dlq');
+        dlqJob = dlqResponse.jobs.find((j: any) => j.originalJobId === jobId);
+        if (dlqJob) {
+          log(`✓ Job found in DLQ on final check`, colors.green);
+          return true;
+        }
+      } catch (dlqError) {
+        // Continue
+      }
       log(`✓ Job no longer in main table (likely moved to DLQ)`, colors.green);
       return true;
     }

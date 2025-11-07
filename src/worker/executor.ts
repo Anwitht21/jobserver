@@ -167,7 +167,7 @@ export async function executeJob(
       } catch (dlqError) {
         // If moving to DLQ fails, fall back to marking as failed
         console.error(`[${job.id}] Failed to move job to DLQ:`, dlqError);
-        await updateJobStatus(job.id, 'failed', errorSummary);
+      await updateJobStatus(job.id, 'failed', errorSummary);
         await createJobEvent(job.id, 'failed', { 
           error: errorSummary, 
           attempts: updatedJob.attempts,
