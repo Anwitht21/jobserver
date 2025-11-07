@@ -2,8 +2,41 @@ import 'dotenv/config';
 
 const API_URL = process.env.API_URL || 'http://localhost:3000';
 
+// API response types
+interface CreateJobResponse {
+  jobId: string;
+  status: string;
+}
+
+interface JobResponse {
+  jobId: string;
+  definitionKey: string;
+  definitionVersion: number;
+  status: string;
+  attempts: number;
+  maxAttempts: number;
+  priority: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  heartbeatAt: string | null;
+  workerId: string | null;
+  errorSummary: string | null;
+}
+
+interface JobEvent {
+  id: number;
+  eventType: string;
+  at: string;
+  payload: Record<string, unknown> | null;
+}
+
+interface JobEventsResponse {
+  jobId: string;
+  events: JobEvent[];
+}
+
 // Helper function to make API calls
-async function apiCall(method: string, path: string, body?: any) {
+async function apiCall<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
   const url = `${API_URL}${path}`;
   const options: RequestInit = {
     method,
@@ -21,7 +54,7 @@ async function apiCall(method: string, path: string, body?: any) {
     throw new Error(`API Error: ${response.status} - ${JSON.stringify(data)}`);
   }
   
-  return data;
+  return data as T;
 }
 
 // Wait function
@@ -43,14 +76,14 @@ function log(message: string, color: string = colors.reset) {
   console.log(`${color}${message}${colors.reset}`);
 }
 
-async function waitForJobCompletion(jobId: string, maxWaitSeconds: number = 60): Promise<any> {
+async function waitForJobCompletion(jobId: string, maxWaitSeconds: number = 60): Promise<JobResponse> {
   let attempts = 0;
   
   while (attempts < maxWaitSeconds) {
     await sleep(1000);
     attempts++;
     
-    const job = await apiCall('GET', `/v1/jobs/${jobId}`);
+    const job = await apiCall<JobResponse>('GET', `/v1/jobs/${jobId}`);
     log(`  [${attempts}s] Status: ${job.status}`, colors.cyan);
     
     if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
@@ -66,7 +99,7 @@ async function testCancellation() {
   
   log('\nTest 1: Cancel 4K video encoding job...', colors.cyan);
   
-  const createResponse = await apiCall('POST', '/v1/jobs', {
+  const createResponse = await apiCall<CreateJobResponse>('POST', '/v1/jobs', {
     definitionKey: 'encode.video',
     definitionVersion: 1,
     params: {
@@ -84,7 +117,7 @@ async function testCancellation() {
   await sleep(2000);
   
   // Check status before cancellation
-  const jobBefore = await apiCall('GET', `/v1/jobs/${jobId}`);
+  const jobBefore = await apiCall<JobResponse>('GET', `/v1/jobs/${jobId}`);
   log(`Status before cancellation: ${jobBefore.status}`, colors.yellow);
   
   // Cancel it
@@ -108,10 +141,10 @@ async function testCancellation() {
   }
   
   // Check events
-  const events = await apiCall('GET', `/v1/jobs/${jobId}/events`);
+  const events = await apiCall<JobEventsResponse>('GET', `/v1/jobs/${jobId}/events`);
   log(`\nJob events:`, colors.cyan);
-  events.events.forEach((event: any) => {
-    log(`  - ${event.eventType} at ${event.createdAt}`);
+  events.events.forEach((event) => {
+    log(`  - ${event.eventType} at ${event.at}`);
   });
   
   return true;
@@ -123,9 +156,9 @@ async function testCancellationBeforeExecution() {
   log('\nTest 2: Cancel job before it starts executing...', colors.cyan);
   
   // Create multiple jobs to queue up
-  const jobIds = [];
+  const jobIds: string[] = [];
   for (let i = 0; i < 5; i++) {
-    const response = await apiCall('POST', '/v1/jobs', {
+    const response = await apiCall<CreateJobResponse>('POST', '/v1/jobs', {
       definitionKey: 'encode.video',
       definitionVersion: 1,
       params: {
@@ -148,7 +181,7 @@ async function testCancellationBeforeExecution() {
   await sleep(3000);
   
   // Check final status
-  const finalJob = await apiCall('GET', `/v1/jobs/${targetJobId}`);
+  const finalJob = await apiCall<JobResponse>('GET', `/v1/jobs/${targetJobId}`);
   log(`\nFinal status: ${finalJob.status}`, colors.yellow);
   
   if (finalJob.status === 'cancelled') {
