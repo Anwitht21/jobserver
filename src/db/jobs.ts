@@ -1,5 +1,5 @@
 import { getPool } from './connection';
-import { Job, JobStatus, CreateJobRequest, JobEvent, JobMetricsSummary, JobPerformanceStats, JobThroughput, DefinitionMetrics, ThroughputDataPoint, JobStatusCounts } from '../types';
+import { Job, JobStatus, CreateJobRequest, JobEvent, JobMetricsSummary, JobPerformanceStats, JobThroughput, DefinitionMetrics, ThroughputDataPoint, JobStatusCounts, DlqJob } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { notifyJobAvailable } from './notifications';
 
@@ -546,5 +546,144 @@ function mapRowToJob(row: any): Job {
     idempotencyKey: row.idempotency_key,
     errorSummary: row.error_summary,
   };
+}
+
+function mapRowToDlqJob(row: any): DlqJob {
+  return {
+    id: row.id,
+    originalJobId: row.original_job_id,
+    definitionKey: row.definition_key,
+    definitionVersion: row.definition_version,
+    params: row.params || {},
+    priority: row.priority,
+    attempts: row.attempts,
+    maxAttempts: row.max_attempts,
+    queuedAt: row.queued_at,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    errorSummary: row.error_summary,
+    idempotencyKey: row.idempotency_key,
+    movedToDlqAt: row.moved_to_dlq_at,
+  };
+}
+
+/**
+ * Move a failed job to the dead-letter queue.
+ * This should be called when a job has exceeded its max attempts.
+ */
+export async function moveJobToDlq(job: Job, errorSummary: string): Promise<DlqJob> {
+  const pool = getPool();
+  
+  // Use a transaction to ensure atomicity
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    // Insert into DLQ
+    const dlqId = uuidv4();
+    const result = await client.query(
+      `INSERT INTO jobs_dlq (
+        id, original_job_id, definition_key, definition_version, params, priority,
+        attempts, max_attempts, queued_at, started_at, finished_at, error_summary, idempotency_key
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11, $12)
+      RETURNING *`,
+      [
+        dlqId,
+        job.id,
+        job.definitionKey,
+        job.definitionVersion,
+        JSON.stringify(job.params),
+        job.priority,
+        job.attempts,
+        job.maxAttempts,
+        job.queuedAt,
+        job.startedAt,
+        errorSummary,
+        job.idempotencyKey ?? null,
+      ]
+    );
+    
+    // Delete job_events first (due to foreign key constraint)
+    await client.query('DELETE FROM job_events WHERE job_id = $1', [job.id]);
+    
+    // Delete from main jobs table
+    await client.query('DELETE FROM jobs WHERE id = $1', [job.id]);
+    
+    await client.query('COMMIT');
+    
+    return mapRowToDlqJob(result.rows[0]);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * List jobs in the dead-letter queue.
+ */
+export async function listDlqJobs(
+  definitionKey?: string,
+  limit: number = 100,
+  offset: number = 0
+): Promise<DlqJob[]> {
+  const pool = getPool();
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+  let paramIndex = 1;
+  
+  if (definitionKey) {
+    conditions.push(`definition_key = $${paramIndex}`);
+    values.push(definitionKey);
+    paramIndex++;
+  }
+  
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  
+  const result = await pool.query(
+    `SELECT * FROM jobs_dlq
+     ${whereClause}
+     ORDER BY moved_to_dlq_at DESC
+     LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+    [...values, limit, offset]
+  );
+  
+  return result.rows.map(mapRowToDlqJob);
+}
+
+/**
+ * Get a DLQ job by ID.
+ */
+export async function getDlqJobById(dlqJobId: string): Promise<DlqJob | null> {
+  const pool = getPool();
+  const result = await pool.query('SELECT * FROM jobs_dlq WHERE id = $1', [dlqJobId]);
+  if (result.rows.length === 0) {
+    return null;
+  }
+  return mapRowToDlqJob(result.rows[0]);
+}
+
+/**
+ * Retry a DLQ job by creating a new job from it.
+ */
+export async function retryDlqJob(dlqJobId: string, maxAttempts?: number): Promise<Job> {
+  const dlqJob = await getDlqJobById(dlqJobId);
+  
+  if (!dlqJob) {
+    throw new Error(`DLQ job ${dlqJobId} not found`);
+  }
+  
+  // Create a new job from the DLQ job
+  const newJob = await createJob({
+    definitionKey: dlqJob.definitionKey,
+    definitionVersion: dlqJob.definitionVersion,
+    params: dlqJob.params,
+    priority: dlqJob.priority,
+    maxAttempts: maxAttempts ?? dlqJob.maxAttempts,
+    idempotencyKey: dlqJob.idempotencyKey ?? undefined,
+  });
+  
+  return newJob;
 }
 

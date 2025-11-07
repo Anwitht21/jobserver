@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
-import { createJob, getJobById, listJobs, requestCancellation, getJobEvents } from '../db/jobs';
+import { createJob, getJobById, listJobs, requestCancellation, getJobEvents, listDlqJobs, getDlqJobById, retryDlqJob } from '../db/jobs';
 import { CreateJobRequest } from '../types';
 import { runMigrations } from '../db/migrations';
 import { metricsCache } from '../utils/metrics-cache';
@@ -229,6 +229,94 @@ app.get('/v1/metrics/performance', async (req: Request, res: Response) => {
     res.json(performance);
   } catch (error) {
     console.error('Error getting performance metrics:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /v1/dlq
+app.get('/v1/dlq', async (req: Request, res: Response) => {
+  try {
+    const definitionKey = req.query.definitionKey as string | undefined;
+    const limit = parseInt(req.query.limit as string || '100', 10);
+    const offset = parseInt(req.query.offset as string || '0', 10);
+    
+    const dlqJobs = await listDlqJobs(definitionKey, limit, offset);
+    
+    res.json({
+      jobs: dlqJobs.map(job => ({
+        dlqJobId: job.id,
+        originalJobId: job.originalJobId,
+        definitionKey: job.definitionKey,
+        definitionVersion: job.definitionVersion,
+        priority: job.priority,
+        attempts: job.attempts,
+        maxAttempts: job.maxAttempts,
+        queuedAt: job.queuedAt.toISOString(),
+        startedAt: job.startedAt?.toISOString() || null,
+        finishedAt: job.finishedAt.toISOString(),
+        errorSummary: job.errorSummary,
+        movedToDlqAt: job.movedToDlqAt.toISOString(),
+      })),
+      total: dlqJobs.length,
+    });
+  } catch (error) {
+    console.error('Error listing DLQ jobs:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /v1/dlq/:dlqJobId
+app.get('/v1/dlq/:dlqJobId', async (req: Request, res: Response) => {
+  try {
+    const { dlqJobId } = req.params;
+    const dlqJob = await getDlqJobById(dlqJobId);
+    
+    if (!dlqJob) {
+      res.status(404).json({ error: 'DLQ job not found' });
+      return;
+    }
+    
+    res.json({
+      dlqJobId: dlqJob.id,
+      originalJobId: dlqJob.originalJobId,
+      definitionKey: dlqJob.definitionKey,
+      definitionVersion: dlqJob.definitionVersion,
+      params: dlqJob.params,
+      priority: dlqJob.priority,
+      attempts: dlqJob.attempts,
+      maxAttempts: dlqJob.maxAttempts,
+      queuedAt: dlqJob.queuedAt.toISOString(),
+      startedAt: dlqJob.startedAt?.toISOString() || null,
+      finishedAt: dlqJob.finishedAt.toISOString(),
+      errorSummary: dlqJob.errorSummary,
+      idempotencyKey: dlqJob.idempotencyKey,
+      movedToDlqAt: dlqJob.movedToDlqAt.toISOString(),
+    });
+  } catch (error) {
+    console.error('Error getting DLQ job:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /v1/dlq/:dlqJobId/retry
+app.post('/v1/dlq/:dlqJobId/retry', async (req: Request, res: Response) => {
+  try {
+    const { dlqJobId } = req.params;
+    const maxAttempts = req.body.maxAttempts ? parseInt(req.body.maxAttempts, 10) : undefined;
+    
+    const newJob = await retryDlqJob(dlqJobId, maxAttempts);
+    
+    res.status(201).json({
+      jobId: newJob.id,
+      status: newJob.status,
+      message: 'Job retried from DLQ',
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+      return;
+    }
+    console.error('Error retrying DLQ job:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

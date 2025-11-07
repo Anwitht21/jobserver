@@ -16,6 +16,7 @@
     "test:metrics": "tsx src/test/test-metrics.ts",
     "test:scheduler": "tsx src/test/test-scheduler.ts",
     "test:notifications": "tsx src/test/test-notifications.ts",
+    "test:dlq": "tsx src/test/test-dlq.ts",
     "migrate:create": "tsx src/db/create-migration.ts",
     "test": "jest"
   },

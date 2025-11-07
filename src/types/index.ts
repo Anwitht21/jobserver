@@ -70,3 +70,20 @@ export interface CreateJobRequest {
   idempotencyKey?: string;
 }
 
+export interface DlqJob {
+  id: string;
+  originalJobId: string;
+  definitionKey: string;
+  definitionVersion: number;
+  params: JobParams;
+  priority: number;
+  attempts: number;
+  maxAttempts: number;
+  queuedAt: Date;
+  startedAt: Date | null;
+  finishedAt: Date;
+  errorSummary: string;
+  idempotencyKey: string | null;
+  movedToDlqAt: Date;
+}
+

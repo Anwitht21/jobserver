@@ -98,6 +98,39 @@ export async function runMigrations(): Promise<void> {
     );
   `);
   
+  // Create jobs_dlq table (Dead Letter Queue)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS jobs_dlq (
+      id UUID PRIMARY KEY,
+      original_job_id UUID NOT NULL,
+      definition_key TEXT NOT NULL,
+      definition_version INT NOT NULL DEFAULT 1,
+      params JSONB NOT NULL DEFAULT '{}',
+      priority INT NOT NULL DEFAULT 0,
+      attempts INT NOT NULL DEFAULT 0,
+      max_attempts INT NOT NULL DEFAULT 3,
+      queued_at TIMESTAMPTZ NOT NULL,
+      started_at TIMESTAMPTZ,
+      finished_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      error_summary TEXT NOT NULL,
+      idempotency_key TEXT,
+      moved_to_dlq_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT fk_dlq_def FOREIGN KEY (definition_key, definition_version)
+        REFERENCES job_definitions(key, version)
+    );
+  `);
+  
+  // Create index on jobs_dlq for common queries
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_dlq_definition 
+    ON jobs_dlq(definition_key, definition_version);
+  `);
+  
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_dlq_moved_at 
+    ON jobs_dlq(moved_to_dlq_at DESC);
+  `);
+  
   console.log('Migrations completed successfully');
 }
 

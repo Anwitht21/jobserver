@@ -1,5 +1,5 @@
 import { Job, JobDefinition, JobContext } from '../types';
-import { createJobEvent, updateJobStatus, incrementAttempts, scheduleRetry, updateHeartbeat, getJobById } from '../db/jobs';
+import { createJobEvent, updateJobStatus, incrementAttempts, scheduleRetry, updateHeartbeat, getJobById, moveJobToDlq } from '../db/jobs';
 
 export function calculateBackoffDelay(attempt: number, baseSeconds: number = 1, maxSeconds: number = 3600): number {
   const exponentialDelay = baseSeconds * Math.pow(2, attempt);
@@ -152,9 +152,28 @@ export async function executeJob(
         attempts: updatedJob.attempts 
       });
     } else {
-      // Max attempts reached
-      await updateJobStatus(job.id, 'failed', errorSummary);
-      await createJobEvent(job.id, 'failed', { error: errorSummary, attempts: updatedJob.attempts });
+      // Max attempts reached - move to DLQ
+      console.log(`[${job.id}] Max attempts reached, moving to DLQ`);
+      
+      // Create event before moving to DLQ (since job will be deleted)
+      await createJobEvent(job.id, 'moved_to_dlq', { 
+        error: errorSummary, 
+        attempts: updatedJob.attempts
+      });
+      
+      try {
+        const dlqJob = await moveJobToDlq(updatedJob, errorSummary);
+        console.log(`[${job.id}] Job moved to DLQ: ${dlqJob.id}`);
+      } catch (dlqError) {
+        // If moving to DLQ fails, fall back to marking as failed
+        console.error(`[${job.id}] Failed to move job to DLQ:`, dlqError);
+        await updateJobStatus(job.id, 'failed', errorSummary);
+        await createJobEvent(job.id, 'failed', { 
+          error: errorSummary, 
+          attempts: updatedJob.attempts,
+          dlqError: dlqError instanceof Error ? dlqError.message : String(dlqError)
+        });
+      }
       
       try {
         if (definition.onFail) {
