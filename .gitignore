@@ -5,3 +5,11 @@ dist/
 .env.local
 .DS_Store
 
+# Video uploads and outputs
+uploads/
+outputs/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
