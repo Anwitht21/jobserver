@@ -83,6 +83,18 @@ export interface MetricsResponse {
   throughput: JobThroughput;
 }
 
+export interface JobDefinition {
+  key: string;
+  version: number;
+  defaultMaxAttempts: number;
+  timeoutSeconds: number;
+  concurrencyLimit: number;
+}
+
+export interface JobDefinitionsResponse {
+  definitions: JobDefinition[];
+}
+
 export interface DefinitionMetrics {
   definitionKey: string;
   definitionVersion: number;

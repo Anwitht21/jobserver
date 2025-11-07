@@ -6,64 +6,78 @@ import { MetricCard } from '@/components/metrics/MetricCard';
 import { DefinitionMetricsChart } from '@/components/charts/DefinitionMetricsChart';
 import { Navigation } from '@/components/layout/Navigation';
 import { api } from '@/lib/api';
-import { DefinitionMetrics } from '@/types/api';
+import { DefinitionMetrics, JobDefinition } from '@/types/api';
 import { 
   BarChart3, 
   CheckCircle, 
   XCircle,
   Clock,
   Target,
-  TrendingUp
+  TrendingUp,
+  Settings,
+  Zap
 } from 'lucide-react';
 
 export default function DefinitionsPage() {
-  const [definitions, setDefinitions] = useState<DefinitionMetrics[]>([]);
+  const [definitions, setDefinitions] = useState<JobDefinition[]>([]);
+  const [metrics, setMetrics] = useState<DefinitionMetrics[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchDefinitions = async () => {
+  const fetchData = async () => {
     try {
       setLoading(true);
       setError(null);
       
-      const response = await api.getDefinitionMetrics();
-      setDefinitions(response.definitions);
+      const [definitionsResponse, metricsResponse] = await Promise.all([
+        api.getJobDefinitions(),
+        api.getDefinitionMetrics().catch(() => ({ definitions: [] })), // Metrics may be empty if no jobs exist
+      ]);
+      
+      setDefinitions(definitionsResponse.definitions);
+      setMetrics(metricsResponse.definitions);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch definition metrics');
+      setError(err instanceof Error ? err.message : 'Failed to fetch definitions');
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchDefinitions();
+    fetchData();
     
     // Auto-refresh every 30 seconds
-    const interval = setInterval(fetchDefinitions, 30000);
+    const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
   }, []);
 
-  const totalJobs = definitions.reduce((sum, def) => sum + def.total, 0);
-  const totalSucceeded = definitions.reduce((sum, def) => sum + def.byStatus.succeeded, 0);
-  const totalFailed = definitions.reduce((sum, def) => sum + def.byStatus.failed, 0);
+  // Create a map of metrics by definition key+version for quick lookup
+  const metricsMap = new Map<string, DefinitionMetrics>();
+  metrics.forEach(m => {
+    metricsMap.set(`${m.definitionKey}@${m.definitionVersion}`, m);
+  });
+
+  const totalJobs = metrics.reduce((sum, def) => sum + def.total, 0);
+  const totalSucceeded = metrics.reduce((sum, def) => sum + def.byStatus.succeeded, 0);
+  const totalFailed = metrics.reduce((sum, def) => sum + def.byStatus.failed, 0);
   const overallSuccessRate = totalJobs > 0 ? (totalSucceeded / totalJobs) * 100 : 0;
-  const avgProcessingTime = definitions.length > 0 
-    ? definitions.reduce((sum, def) => sum + (def.avgProcessingTime || 0), 0) / definitions.length 
+  const avgProcessingTime = metrics.length > 0 
+    ? metrics.reduce((sum, def) => sum + (def.avgProcessingTime || 0), 0) / metrics.length 
     : 0;
 
-  const topPerformers = definitions
+  const topPerformers = metrics
     .filter(def => def.total >= 10) // Only consider definitions with meaningful sample size
     .sort((a, b) => b.successRate - a.successRate)
     .slice(0, 3);
 
-  const bottomPerformers = definitions
+  const bottomPerformers = metrics
     .filter(def => def.total >= 10)
     .sort((a, b) => a.successRate - b.successRate)
     .slice(0, 3);
 
   return (
     <div className="min-h-screen bg-background">
-      <Navigation onRefresh={fetchDefinitions} isRefreshing={loading} />
+      <Navigation onRefresh={fetchData} isRefreshing={loading} />
       
       <div className="container mx-auto p-6 space-y-8">
         <div className="space-y-2">
@@ -91,12 +105,12 @@ export default function DefinitionsPage() {
               <MetricCard
                 title="Total Definitions"
                 value={definitions.length}
-                description="Active job definitions"
-                icon={BarChart3}
+                description="Registered job definitions"
+                icon={Settings}
               />
               <MetricCard
                 title="Overall Success Rate"
-                value={`${Math.round(overallSuccessRate)}%`}
+                value={totalJobs > 0 ? `${Math.round(overallSuccessRate)}%` : 'N/A'}
                 description="Across all definitions"
                 icon={CheckCircle}
               />
@@ -114,24 +128,80 @@ export default function DefinitionsPage() {
               />
             </div>
 
-            {/* Performance Chart */}
+            {/* Job Definitions List */}
             <Card>
               <CardHeader>
-                <CardTitle>Definition Performance Comparison</CardTitle>
+                <CardTitle className="flex items-center gap-2">
+                  <Zap className="h-5 w-5" />
+                  Registered Job Definitions
+                </CardTitle>
                 <CardDescription>
-                  Success vs failure rates for each job definition
+                  All job definitions available in the system
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 {definitions.length > 0 ? (
-                  <DefinitionMetricsChart data={definitions} />
+                  <div className="rounded-md border overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b bg-muted/50">
+                          <th className="p-4 text-left">Definition Key</th>
+                          <th className="p-4 text-right">Version</th>
+                          <th className="p-4 text-right">Default Max Attempts</th>
+                          <th className="p-4 text-right">Timeout (seconds)</th>
+                          <th className="p-4 text-right">Concurrency Limit</th>
+                          <th className="p-4 text-right">Jobs Processed</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {definitions.map((def) => {
+                          const metric = metricsMap.get(`${def.key}@${def.version}`);
+                          return (
+                            <tr key={`${def.key}-${def.version}`} className="border-b hover:bg-muted/25">
+                              <td className="p-4">
+                                <p className="font-medium">{def.key}</p>
+                              </td>
+                              <td className="p-4 text-right">v{def.version}</td>
+                              <td className="p-4 text-right">{def.defaultMaxAttempts}</td>
+                              <td className="p-4 text-right">{def.timeoutSeconds.toLocaleString()}</td>
+                              <td className="p-4 text-right">
+                                {def.concurrencyLimit === 0 ? 'Unlimited' : def.concurrencyLimit}
+                              </td>
+                              <td className="p-4 text-right">
+                                {metric ? (
+                                  <span className="font-medium">{metric.total.toLocaleString()}</span>
+                                ) : (
+                                  <span className="text-muted-foreground">0</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 ) : (
-                  <div className="h-[300px] flex items-center justify-center text-muted-foreground">
-                    No definition metrics available
+                  <div className="text-center py-8 text-muted-foreground">
+                    No job definitions found. Run <code className="bg-muted px-2 py-1 rounded">npm run register-definitions</code> to register definitions.
                   </div>
                 )}
               </CardContent>
             </Card>
+
+            {/* Performance Chart */}
+            {metrics.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Definition Performance Comparison</CardTitle>
+                  <CardDescription>
+                    Success vs failure rates for each job definition
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <DefinitionMetricsChart data={metrics} />
+                </CardContent>
+              </Card>
+            )}
 
             {/* Top and Bottom Performers */}
             <div className="grid gap-6 md:grid-cols-2">
@@ -217,15 +287,15 @@ export default function DefinitionsPage() {
             </div>
 
             {/* Detailed Metrics Table */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Detailed Metrics by Definition</CardTitle>
-                <CardDescription>
-                  Comprehensive performance statistics for each job definition
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {definitions.length > 0 ? (
+            {metrics.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Detailed Metrics by Definition</CardTitle>
+                  <CardDescription>
+                    Comprehensive performance statistics for each job definition
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
                   <div className="rounded-md border overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
@@ -242,7 +312,7 @@ export default function DefinitionsPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {definitions.map((def) => (
+                        {metrics.map((def) => (
                           <tr key={`${def.definitionKey}-${def.definitionVersion}`} className="border-b hover:bg-muted/25">
                             <td className="p-4">
                               <div>
@@ -275,13 +345,9 @@ export default function DefinitionsPage() {
                       </tbody>
                     </table>
                   </div>
-                ) : (
-                  <div className="text-center py-8 text-muted-foreground">
-                    No job definitions found
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+            )}
           </>
         )}
       </div>

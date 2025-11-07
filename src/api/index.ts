@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { z } from 'zod';
-import { createJob, getJobById, listJobs, requestCancellation, getJobEvents, listDlqJobs, getDlqJobById, retryDlqJob } from '../db/jobs';
+import { createJob, getJobById, listJobs, requestCancellation, getJobEvents, listDlqJobs, getDlqJobById, retryDlqJob, listJobDefinitions } from '../db/jobs';
 import { CreateJobRequest } from '../types';
 import { runMigrations } from '../db/migrations';
 import { metricsCache } from '../utils/metrics-cache';
@@ -222,6 +222,26 @@ app.get('/v1/metrics', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('Error getting metrics:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /v1/definitions
+app.get('/v1/definitions', async (req: Request, res: Response) => {
+  try {
+    const definitions = await listJobDefinitions();
+    
+    res.json({
+      definitions: definitions.map(def => ({
+        key: def.key,
+        version: def.version,
+        defaultMaxAttempts: def.defaultMaxAttempts,
+        timeoutSeconds: def.timeoutSeconds,
+        concurrencyLimit: def.concurrencyLimit,
+      })),
+    });
+  } catch (error) {
+    console.error('Error getting job definitions:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -3,6 +3,29 @@ import { Job, JobStatus, CreateJobRequest, JobEvent, JobMetricsSummary, JobPerfo
 import { v4 as uuidv4 } from 'uuid';
 import { notifyJobAvailable } from './notifications';
 
+export interface JobDefinitionRecord {
+  key: string;
+  version: number;
+  defaultMaxAttempts: number;
+  timeoutSeconds: number;
+  concurrencyLimit: number;
+}
+
+export async function listJobDefinitions(): Promise<JobDefinitionRecord[]> {
+  const pool = getPool();
+  const result = await pool.query(
+    'SELECT key, version, default_max_attempts, timeout_seconds, concurrency_limit FROM job_definitions ORDER BY key, version'
+  );
+  
+  return result.rows.map((row) => ({
+    key: row.key,
+    version: row.version,
+    defaultMaxAttempts: row.default_max_attempts,
+    timeoutSeconds: row.timeout_seconds,
+    concurrencyLimit: row.concurrency_limit,
+  }));
+}
+
 export async function createJobDefinition(
   key: string,
   version: number,

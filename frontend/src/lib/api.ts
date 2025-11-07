@@ -14,6 +14,8 @@ import {
   RetryDlqJobResponse,
   ApiError,
   JobStatus,
+  JobDefinition,
+  JobDefinitionsResponse,
 } from '@/types/api';
 
 class ApiClient {
@@ -101,6 +103,10 @@ class ApiClient {
     
     const query = params.toString();
     return this.request(`/v1/metrics/definitions${query ? `?${query}` : ''}`);
+  }
+
+  async getJobDefinitions(): Promise<JobDefinitionsResponse> {
+    return this.request('/v1/definitions');
   }
 
   async getThroughputMetrics(hours = 24, ttl?: number): Promise<ThroughputResponse> {
