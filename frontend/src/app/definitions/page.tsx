@@ -288,14 +288,14 @@ export default function DefinitionsPage() {
 
             {/* Detailed Metrics Table */}
             {metrics.length > 0 && (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Detailed Metrics by Definition</CardTitle>
-                  <CardDescription>
-                    Comprehensive performance statistics for each job definition
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
+            <Card>
+              <CardHeader>
+                <CardTitle>Detailed Metrics by Definition</CardTitle>
+                <CardDescription>
+                  Comprehensive performance statistics for each job definition
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
                   <div className="rounded-md border overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
@@ -345,8 +345,8 @@ export default function DefinitionsPage() {
                       </tbody>
                     </table>
                   </div>
-                </CardContent>
-              </Card>
+              </CardContent>
+            </Card>
             )}
           </>
         )}

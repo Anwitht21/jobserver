@@ -1,10 +1,12 @@
 import 'dotenv/config';
-import { claimJob, getJobById, reclaimOrphanedJobs, updateJobStatus } from '../db/jobs';
+import { claimJob, reclaimOrphanedJobs, updateJobStatus } from '../db/jobs';
 import { dynamicJobRegistry } from './dynamic-registry';
-import { executeJob, handleCancellation } from './executor';
+import { handleCancellation } from './executor';
 import { runMigrations } from '../db/migrations';
 import { createNotificationListener, closeNotificationListener } from '../db/notifications';
 import { Client } from 'pg';
+import { spawn, ChildProcess } from 'child_process';
+import * as path from 'path';
 
 const WORKER_ID = process.env.WORKER_ID || `worker-${process.pid}`;
 const MAX_CONCURRENT_EXECUTIONS = parseInt(process.env.MAX_CONCURRENT_EXECUTIONS || '10', 10);
@@ -15,7 +17,7 @@ const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || '60000', 10); 
 
 class Worker {
   private running = false;
-  private activeExecutions = new Map<string, Promise<void>>();
+  private activeProcesses = new Map<string, ChildProcess>();
   private pollInterval: NodeJS.Timeout | null = null;
   private orphanRecoveryInterval: NodeJS.Timeout | null = null;
   private notificationClient: Client | null = null;
@@ -27,7 +29,7 @@ class Worker {
     }
 
     this.running = true;
-    console.log(`[${WORKER_ID}] Starting worker with max ${MAX_CONCURRENT_EXECUTIONS} concurrent executions`);
+    console.log(`[${WORKER_ID}] Starting worker coordinator - spawning one process per job (max ${MAX_CONCURRENT_EXECUTIONS} concurrent)`);
 
     // Set up LISTEN/NOTIFY for real-time job notifications
     try {
@@ -67,7 +69,7 @@ class Worker {
       return;
     }
     
-    if (!this.pollForJobsPending && this.activeExecutions.size < MAX_CONCURRENT_EXECUTIONS) {
+    if (!this.pollForJobsPending && this.activeProcesses.size < MAX_CONCURRENT_EXECUTIONS) {
       this.pollForJobsPending = true;
       this.pollForJobs()
         .catch((error) => {
@@ -98,46 +100,109 @@ class Worker {
       this.notificationClient = null;
     }
 
-    // Wait for active executions to complete
-    console.log(`[${WORKER_ID}] Waiting for ${this.activeExecutions.size} active executions to complete...`);
-    await Promise.allSettled(Array.from(this.activeExecutions.values()));
+    // Wait for active processes to complete or kill them
+    console.log(`[${WORKER_ID}] Waiting for ${this.activeProcesses.size} active processes to complete...`);
+    
+    // Send SIGTERM to all child processes
+    for (const [jobId, childProcess] of this.activeProcesses.entries()) {
+      console.log(`[${WORKER_ID}] Sending SIGTERM to process for job ${jobId}`);
+      childProcess.kill('SIGTERM');
+    }
+    
+    // Wait a bit for graceful shutdown
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Force kill any remaining processes
+    for (const [jobId, childProcess] of this.activeProcesses.entries()) {
+      if (!childProcess.killed) {
+        console.log(`[${WORKER_ID}] Force killing process for job ${jobId}`);
+        childProcess.kill('SIGKILL');
+      }
+    }
     
     console.log(`[${WORKER_ID}] Worker stopped`);
   }
 
   private async pollForJobs(): Promise<void> {
-    if (this.activeExecutions.size >= MAX_CONCURRENT_EXECUTIONS) {
-      return;
+    // Keep spawning processes until we reach max concurrent executions
+    while (this.activeProcesses.size < MAX_CONCURRENT_EXECUTIONS && this.running) {
+      const job = await claimJob(WORKER_ID, LEASE_DURATION_SECONDS);
+      if (!job) {
+        return; // No jobs available
+      }
+
+      const definition = dynamicJobRegistry.get(job.definitionKey, job.definitionVersion);
+      if (!definition) {
+        console.error(`[${WORKER_ID}] No definition found for ${job.definitionKey}@${job.definitionVersion}`);
+        await updateJobStatus(job.id, 'failed', `No definition found for ${job.definitionKey}@${job.definitionVersion}`);
+        continue; // Try next job
+      }
+
+      // Check if cancellation was requested before starting
+      if (job.cancelRequestedAt) {
+        await handleCancellation(job, definition, CANCEL_GRACE_MS);
+        continue; // Try next job
+      }
+
+      // Spawn a child process to execute the job
+      this.spawnJobProcess(job.id);
     }
+  }
 
-    const job = await claimJob(WORKER_ID, LEASE_DURATION_SECONDS);
-    if (!job) {
-      return;
-    }
+  private spawnJobProcess(jobId: string): void {
+    // Determine the script path - use tsx in development, compiled JS in production
+    const isDevelopment = process.env.NODE_ENV === 'development' || process.env.WATCH_JOBS === 'true';
+    
+    // Resolve path relative to project root
+    const projectRoot = path.resolve(__dirname, '../..');
+    const scriptPath = isDevelopment
+      ? path.join(projectRoot, 'src', 'worker', 'single-job-worker.ts')
+      : path.join(projectRoot, 'dist', 'worker', 'single-job-worker.js');
+    
+    const command = isDevelopment ? 'tsx' : 'node';
+    const args = [scriptPath, jobId];
 
-    const definition = dynamicJobRegistry.get(job.definitionKey, job.definitionVersion);
-    if (!definition) {
-      console.error(`[${WORKER_ID}] No definition found for ${job.definitionKey}@${job.definitionVersion}`);
-      await updateJobStatus(job.id, 'failed', `No definition found for ${job.definitionKey}@${job.definitionVersion}`);
-      return;
-    }
+    console.log(`[${WORKER_ID}] Spawning process for job ${jobId}`);
 
-    // Check if cancellation was requested before starting
-    if (job.cancelRequestedAt) {
-      await handleCancellation(job, definition, CANCEL_GRACE_MS);
-      return;
-    }
+    // Spawn child process
+    const childProcess = spawn(command, args, {
+      stdio: 'inherit', // Inherit stdout/stderr so logs appear in parent
+      env: {
+        ...process.env,
+        WORKER_ID: `single-job-worker-${jobId}-${Date.now()}`,
+      },
+      cwd: projectRoot, // Set working directory to project root
+    });
 
-    // Execute job asynchronously
-    const executionPromise = executeJob(job, definition, WORKER_ID, LEASE_DURATION_SECONDS)
-      .catch((error) => {
-        console.error(`[${WORKER_ID}] Execution error for job ${job.id}:`, error);
-      })
-      .finally(() => {
-        this.activeExecutions.delete(job.id);
-      });
+    // Track the process
+    this.activeProcesses.set(jobId, childProcess);
 
-    this.activeExecutions.set(job.id, executionPromise);
+    // Handle process exit
+    childProcess.on('exit', (code, signal) => {
+      this.activeProcesses.delete(jobId);
+      
+      if (code === 0) {
+        console.log(`[${WORKER_ID}] Process for job ${jobId} exited successfully`);
+      } else {
+        console.error(`[${WORKER_ID}] Process for job ${jobId} exited with code ${code}${signal ? `, signal ${signal}` : ''}`);
+      }
+
+      // Wake up to check for more jobs if we're below max concurrent
+      if (this.running && this.activeProcesses.size < MAX_CONCURRENT_EXECUTIONS) {
+        this.wakeUp();
+      }
+    });
+
+    // Handle process errors
+    childProcess.on('error', (error) => {
+      console.error(`[${WORKER_ID}] Error spawning process for job ${jobId}:`, error);
+      this.activeProcesses.delete(jobId);
+      
+      // Wake up to check for more jobs
+      if (this.running && this.activeProcesses.size < MAX_CONCURRENT_EXECUTIONS) {
+        this.wakeUp();
+      }
+    });
   }
 
   private async reclaimOrphans(): Promise<void> {
