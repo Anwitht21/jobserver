@@ -4,13 +4,14 @@ A horizontally scalable job execution server with support for background jobs, r
 
 ## Features
 
-- ✅ Worker server that executes jobs with isolated execution
+- ✅ Worker coordinator with **process isolation** - each job runs in a separate process
 - ✅ Horizontal scaling support via SKIP LOCKED
 - ✅ REST API: start jobs, get status, cancel jobs
 - ✅ Retry logic with exponential backoff
 - ✅ Idempotency support, heartbeats, orphan job recovery
 - ✅ Priority system, lifecycle hooks, cron-style scheduling
 - ✅ Dynamic job loading from files (auto-discovery)
+- ✅ Real-time job notifications via PostgreSQL LISTEN/NOTIFY
 
 ## Quick Start
 
@@ -112,9 +113,33 @@ curl http://localhost:3000/v1/jobs/{jobId}
 ## Architecture
 
 - **API Server**: Stateless HTTP service for job lifecycle management
-- **Worker Service**: Claims and executes jobs with isolation
+- **Worker Service**: Coordinator that spawns isolated processes for each job execution
 - **Scheduler**: Leader-elected cron scheduler for recurring jobs
 - **Database**: PostgreSQL for job state, queue, and events
+
+### Worker Architecture
+
+The worker uses a **coordinator pattern** with **process isolation**:
+
+1. **Worker Coordinator** (`src/worker/index.ts`):
+   - Claims jobs from the database using `SKIP LOCKED` for horizontal scaling
+   - Spawns a separate child process for each job execution
+   - Manages up to `MAX_CONCURRENT_EXECUTIONS` concurrent processes
+   - Uses PostgreSQL `LISTEN/NOTIFY` for real-time job notifications
+   - Falls back to polling if notifications are unavailable
+   - Handles graceful shutdown by waiting for active processes to complete
+
+2. **Single-Job Worker** (`src/worker/single-job-worker.ts`):
+   - Runs as a separate process for each job
+   - Executes one job and exits
+   - Provides **complete isolation**: if a job crashes or hangs, only that process dies
+   - The coordinator automatically spawns new processes for additional jobs
+
+**Benefits:**
+- **Fault isolation**: Job crashes don't affect other jobs or the coordinator
+- **Resource isolation**: Each job runs in its own process with separate memory space
+- **Clean shutdown**: Processes can be terminated individually without affecting others
+- **Horizontal scaling**: Multiple worker coordinators can run simultaneously
 
 ## Environment Variables
 
